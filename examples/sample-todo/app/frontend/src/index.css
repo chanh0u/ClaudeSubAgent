@@ -1,0 +1,299 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #f5f5f5;
+  color: #333;
+}
+
+.app {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.app-header {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  padding: 30px 20px;
+  border-radius: 10px;
+  margin-bottom: 30px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.app-header h1 {
+  font-size: 2rem;
+  font-weight: 600;
+}
+
+.app-main {
+  background: white;
+  padding: 30px;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* 폼 스타일 */
+.todo-form {
+  margin-bottom: 30px;
+}
+
+.form-group {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.input-text {
+  flex: 2;
+  min-width: 200px;
+  padding: 12px 15px;
+  border: 2px solid #e0e0e0;
+  border-radius: 5px;
+  font-size: 1rem;
+  transition: border-color 0.3s;
+}
+
+.input-text:focus {
+  outline: none;
+  border-color: #667eea;
+}
+
+.input-text:disabled {
+  background: #f5f5f5;
+  cursor: not-allowed;
+}
+
+.input-date {
+  flex: 1;
+  min-width: 150px;
+  padding: 12px 15px;
+  border: 2px solid #e0e0e0;
+  border-radius: 5px;
+  font-size: 1rem;
+  transition: border-color 0.3s;
+}
+
+.input-date:focus {
+  outline: none;
+  border-color: #667eea;
+}
+
+.input-date:disabled {
+  background: #f5f5f5;
+  cursor: not-allowed;
+}
+
+button {
+  padding: 12px 24px;
+  border: none;
+  border-radius: 5px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-add {
+  background: #667eea;
+  color: white;
+}
+
+.btn-add:hover:not(:disabled) {
+  background: #5568d3;
+}
+
+.btn-save {
+  background: #48bb78;
+  color: white;
+}
+
+.btn-save:hover:not(:disabled) {
+  background: #38a169;
+}
+
+.btn-cancel {
+  background: #cbd5e0;
+  color: #2d3748;
+}
+
+.btn-cancel:hover:not(:disabled) {
+  background: #a0aec0;
+}
+
+.btn-edit {
+  background: #4299e1;
+  color: white;
+  padding: 8px 16px;
+  font-size: 0.9rem;
+}
+
+.btn-edit:hover:not(:disabled) {
+  background: #3182ce;
+}
+
+.btn-delete {
+  background: #f56565;
+  color: white;
+  padding: 8px 16px;
+  font-size: 0.9rem;
+}
+
+.btn-delete:hover:not(:disabled) {
+  background: #e53e3e;
+}
+
+/* 할 일 목록 스타일 */
+.todo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.todo-item {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  padding: 15px;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  transition: all 0.3s;
+}
+
+.todo-item:hover {
+  border-color: #cbd5e0;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.todo-item.editing {
+  background: #f7fafc;
+  flex-wrap: wrap;
+}
+
+.todo-item.completed .todo-title {
+  text-decoration: line-through;
+  color: #a0aec0;
+}
+
+.todo-item.overdue {
+  border-color: #fc8181;
+  background: #fff5f5;
+}
+
+.checkbox {
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+}
+
+.todo-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.todo-title {
+  font-size: 1.1rem;
+  font-weight: 500;
+  color: #2d3748;
+}
+
+.todo-deadline {
+  font-size: 0.9rem;
+  color: #718096;
+}
+
+.todo-item.overdue .todo-deadline {
+  color: #e53e3e;
+  font-weight: 600;
+}
+
+.todo-created {
+  font-size: 0.85rem;
+  color: #a0aec0;
+}
+
+.todo-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 메시지 스타일 */
+.error-message {
+  color: #e53e3e;
+  background: #fff5f5;
+  padding: 10px 15px;
+  border-radius: 5px;
+  margin-top: 10px;
+  font-size: 0.9rem;
+  border-left: 4px solid #e53e3e;
+}
+
+.error-message.global {
+  margin-bottom: 20px;
+}
+
+.loading {
+  text-align: center;
+  padding: 40px;
+  color: #718096;
+  font-size: 1.1rem;
+}
+
+.empty-message {
+  text-align: center;
+  padding: 40px;
+  color: #a0aec0;
+  font-size: 1.1rem;
+}
+
+/* 반응형 디자인 */
+@media (max-width: 768px) {
+  .app {
+    padding: 10px;
+  }
+
+  .app-header {
+    padding: 20px 15px;
+  }
+
+  .app-header h1 {
+    font-size: 1.5rem;
+  }
+
+  .app-main {
+    padding: 20px;
+  }
+
+  .form-group {
+    flex-direction: column;
+  }
+
+  .input-text,
+  .input-date {
+    width: 100%;
+  }
+
+  .todo-item {
+    flex-wrap: wrap;
+  }
+
+  .todo-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}

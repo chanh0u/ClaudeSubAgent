@@ -1,0 +1,124 @@
+name: PR Slack Notification
+
+on:
+  pull_request:
+    types: [opened, closed, reopened]
+    branches:
+      - master
+      - main
+
+jobs:
+  notify-slack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract Agent Info
+        id: agent
+        run: |
+          BRANCH="${{ github.head_ref }}"
+
+          # Extract agent name from branch
+          if [[ $BRANCH == feature/planner-* ]]; then
+            AGENT="📋 Planner"
+            COLOR="#3498db"
+          elif [[ $BRANCH == feature/dba-* ]]; then
+            AGENT="🗄️ DBA"
+            COLOR="#9b59b6"
+          elif [[ $BRANCH == feature/backend-* ]]; then
+            AGENT="⚙️ Backend"
+            COLOR="#e74c3c"
+          elif [[ $BRANCH == feature/frontend-* ]]; then
+            AGENT="🎨 Frontend"
+            COLOR="#2ecc71"
+          elif [[ $BRANCH == feature/full-* ]]; then
+            AGENT="🤖 Controller"
+            COLOR="#f39c12"
+          else
+            AGENT="🔧 Manual"
+            COLOR="#95a5a6"
+          fi
+
+          echo "agent=$AGENT" >> $GITHUB_OUTPUT
+          echo "color=$COLOR" >> $GITHUB_OUTPUT
+
+      - name: Send Slack Notification (PR Opened)
+        if: github.event.action == 'opened'
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "attachments": [
+                {
+                  "color": "${{ steps.agent.outputs.color }}",
+                  "title": "🚀 New PR by ${{ steps.agent.outputs.agent }}",
+                  "title_link": "${{ github.event.pull_request.html_url }}",
+                  "fields": [
+                    {
+                      "title": "PR Title",
+                      "value": "${{ github.event.pull_request.title }}",
+                      "short": false
+                    },
+                    {
+                      "title": "Author",
+                      "value": "${{ github.event.pull_request.user.login }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Branch",
+                      "value": "${{ github.head_ref }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Files Changed",
+                      "value": "${{ github.event.pull_request.changed_files }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Lines Changed",
+                      "value": "+${{ github.event.pull_request.additions }} / -${{ github.event.pull_request.deletions }}",
+                      "short": true
+                    }
+                  ],
+                  "footer": "Claude Agent System",
+                  "ts": "${{ github.event.pull_request.created_at }}"
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      - name: Send Slack Notification (PR Merged)
+        if: github.event.action == 'closed' && github.event.pull_request.merged == true
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "attachments": [
+                {
+                  "color": "good",
+                  "title": "✅ PR Merged by ${{ steps.agent.outputs.agent }}",
+                  "title_link": "${{ github.event.pull_request.html_url }}",
+                  "fields": [
+                    {
+                      "title": "PR Title",
+                      "value": "${{ github.event.pull_request.title }}",
+                      "short": false
+                    },
+                    {
+                      "title": "Merged by",
+                      "value": "${{ github.event.pull_request.merged_by.login }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Branch",
+                      "value": "${{ github.head_ref }} → ${{ github.base_ref }}",
+                      "short": true
+                    }
+                  ],
+                  "footer": "Claude Agent System"
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
