@@ -117,3 +117,56 @@ button.ghost {
 @media (max-width: 640px) {
   .inputRow { grid-template-columns: 1fr; }
 }
+
+.providerTabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.providerTab {
+  background: #f1f5f9;
+  color: #0f172a;
+  border: 1px solid #cbd5e1;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.providerTab.active {
+  background: #0f172a;
+  color: #fff;
+  border-color: #0f172a;
+}
+.providerForm {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  margin-bottom: 12px;
+}
+.statusBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  background: #f1f5f9;
+  color: #475569;
+}
+.statusBadge.ok {
+  background: #dcfce7;
+  color: #166534;
+}
+.statusBadge.warn {
+  background: #fef3c7;
+  color: #92400e;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #94a3b8;
+  display: inline-block;
+}
+.dot.ok { background: #22c55e; }
+.dot.warn { background: #f59e0b; }
+.hint { margin: 0 0 8px; color: #64748b; font-size: 0.9rem; }
