@@ -3,7 +3,15 @@
     "allow": [
       "Bash(echo:*)",
       "Bash(test:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\workspace\\\\chanho\\\\ClaudeSubAgent\\\\README.md\"\\); Write-Output \"First 20 bytes: $\\($bytes[0..19] -join ','\\)\"; Write-Output \"Has UTF8 BOM: $\\($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF\\)\"; Write-Output \"Length: $\\($bytes.Length\\)\")",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\workspace\\\\chanho\\\\ClaudeSubAgent\\\\README.md\"\\); $line3start = 0; $newlines = 0; for\\($i=0; $i -lt $bytes.Length; $i++\\) { if\\($bytes[$i] -eq 10\\) { $newlines++; if\\($newlines -eq 2\\) { $line3start = $i+1; break } } }; Write-Output \"Line 3 starts at byte: $line3start\"; Write-Output \"Bytes 30-60: $\\($bytes[30..60] -join ','\\)\")",
+      "PowerShell($content = [System.IO.File]::ReadAllText\\(\"C:\\\\workspace\\\\chanho\\\\ClaudeSubAgent\\\\README.md\", [System.Text.Encoding]::GetEncoding\\(949\\)\\); Write-Output $content)",
+      "PowerShell($content = [System.IO.File]::ReadAllText\\(\"C:\\\\workspace\\\\chanho\\\\ClaudeSubAgent\\\\README.md\", [System.Text.Encoding]::GetEncoding\\(949\\)\\); $utf8NoBom = New-Object System.Text.UTF8Encoding $false; [System.IO.File]::WriteAllText\\(\"C:\\\\workspace\\\\chanho\\\\ClaudeSubAgent\\\\README.md\", $content, $utf8NoBom\\); Write-Output \"Saved as UTF-8 \\(no BOM\\)\")",
+      "PowerShell($path = \"C:\\\\workspace\\\\chanho\\\\ClaudeSubAgent\\\\projects\\\\starter-project\\\\README.md\"; $bytes = [System.IO.File]::ReadAllBytes\\($path\\); Write-Output \"Length: $\\($bytes.Length\\)\"; Write-Output \"Has UTF8 BOM: $\\($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF\\)\"; $hasHighBytes = $false; foreach\\($b in $bytes\\) { if\\($b -gt 127\\) { $hasHighBytes = $true; break } }; Write-Output \"Has non-ASCII bytes: $hasHighBytes\")",
+      "PowerShell($path = \"C:\\\\workspace\\\\chanho\\\\ClaudeSubAgent\\\\projects\\\\starter-project\\\\README.md\"; $content = [System.IO.File]::ReadAllText\\($path, [System.Text.Encoding]::GetEncoding\\(949\\)\\); $utf8NoBom = New-Object System.Text.UTF8Encoding $false; [System.IO.File]::WriteAllText\\($path, $content, $utf8NoBom\\); Write-Output \"Saved as UTF-8 \\(no BOM\\)\")",
+      "PowerShell($path = \"C:\\\\workspace\\\\chanho\\\\ClaudeSubAgent\\\\projects\\\\starter-project\\\\web\\\\src\\\\App.jsx\"; $cp949 = [System.Text.Encoding]::GetEncoding\\(949\\); $content = [System.IO.File]::ReadAllText\\($path, $cp949\\); Write-Output \"--- BEFORE \\(decoded as CP949\\) ---\"; Write-Output $content)",
+      "PowerShell($path = \"C:\\\\workspace\\\\chanho\\\\ClaudeSubAgent\\\\projects\\\\starter-project\\\\web\\\\src\\\\App.jsx\"; $cp949 = [System.Text.Encoding]::GetEncoding\\(949\\); $utf8NoBom = New-Object System.Text.UTF8Encoding $false; $content = [System.IO.File]::ReadAllText\\($path, $cp949\\); [System.IO.File]::WriteAllText\\($path, $content, $utf8NoBom\\); Write-Output \"Saved as UTF-8 \\(no BOM\\)\")"
     ]
   }
 }
