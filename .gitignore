@@ -46,3 +46,11 @@ coverage/
 Thumbs.db
 .vscode/
 .idea/
+
+# Agent Company - 실행 산출물 (프로젝트마다 달라지므로 제외)
+.claude/output/
+/workspace/
+
+# 환경 변수
+.env
+*.env.local
