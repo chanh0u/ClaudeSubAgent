@@ -133,6 +133,16 @@ function App() {
   const [isPipelineRunning, setIsPipelineRunning] = useState(false);
   const [isPipelinePaused, setIsPipelinePaused] = useState(false);
 
+  // 프로젝트 관리 상태
+  const [projectId, setProjectId] = useState(null);
+  const [projectUrl, setProjectUrl] = useState(null);
+  const [fileTree, setFileTree] = useState([]);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [fileContent, setFileContent] = useState("");
+  const [isEditing, setIsEditing] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const [isGeneratingCode, setIsGeneratingCode] = useState(false);
+
   const currentProvider = providers.find((p) => p.id === providerId);
   const currentConfig = configs[providerId];
   const providerStatus = connStatus[providerId] || "미연결";
@@ -530,9 +540,17 @@ function App() {
       setOverallProgress(Math.round((completedSteps / pipeline.length) * 100));
     }
 
-    setStatus("packaged");
+    // 프로젝트 실제 생성 및 실행
+    const projectCreated = await createAndStartProject();
+
+    if (projectCreated) {
+      setStatus("packaged");
+      addLog("🎉 프로젝트 생성 완료!", "success");
+    } else {
+      setStatus("error");
+    }
+
     setIsPipelineRunning(false);
-    addLog("🎉 프로젝트 생성 완료!", "success");
   };
 
   const togglePipeline = () => {
@@ -550,68 +568,315 @@ function App() {
     addLog("❌ 파이프라인 취소됨", "error");
   };
 
+  const createAndStartProject = async () => {
+    setIsGeneratingCode(true);
+    try {
+      // 1. 프로젝트 생성
+      addLog("📦 프로젝트 생성 중...", "info");
+      addLog("🤖 Claude CLI를 사용하여 고품질 코드 생성 중...", "info");
+      addLog("⏳ 이 작업은 1-2분 정도 소요될 수 있습니다.", "warn");
+
+      const createRes = await fetch(`${API_BASE}/api/project/create`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          requirements,
+          project_type: projectType,
+          features,
+          agents: selectedAgents
+        })
+      });
+
+      if (!createRes.ok) {
+        const errorData = await createRes.json();
+        throw new Error(errorData.detail || "프로젝트 생성 실패");
+      }
+
+      const createData = await createRes.json();
+      const newProjectId = createData.project_id;
+      setProjectId(newProjectId);
+      addLog(`✓ 프로젝트 생성됨: ${newProjectId}`, "success");
+
+      // 2. 파일 트리 로드
+      await loadFileTree(newProjectId);
+
+      // 3. 프로젝트 실행
+      addLog("🚀 프로젝트 실행 중...", "info");
+      const startRes = await fetch(`${API_BASE}/api/project/${newProjectId}/start`, {
+        method: "POST"
+      });
+      const startData = await startRes.json();
+      setProjectUrl(startData.url);
+      addLog(`✓ 프로젝트 실행됨: ${startData.url}`, "success");
+
+      return true;
+    } catch (e) {
+      addLog(`❌ 오류: ${e.message}`, "error");
+      console.error("프로젝트 생성 오류:", e);
+      return false;
+    } finally {
+      setIsGeneratingCode(false);
+    }
+  };
+
+  const loadFileTree = async (projId) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/project/${projId}/files`);
+      const data = await res.json();
+      setFileTree(data.tree);
+    } catch (e) {
+      console.error("파일 트리 로드 실패:", e);
+    }
+  };
+
+  const loadFile = async (path) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/project/${projectId}/file?path=${encodeURIComponent(path)}`);
+      const data = await res.json();
+      if (data.binary) {
+        setFileContent("(바이너리 파일 - 편집 불가)");
+        setIsEditing(false);
+      } else {
+        setFileContent(data.content);
+        setIsEditing(false);
+      }
+      setSelectedFile(path);
+    } catch (e) {
+      console.error("파일 로드 실패:", e);
+    }
+  };
+
+  const saveFile = async () => {
+    if (!selectedFile) return;
+    try {
+      await fetch(`${API_BASE}/api/project/${projectId}/file?path=${encodeURIComponent(selectedFile)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: fileContent })
+      });
+      alert("파일이 저장되었습니다.");
+      setIsEditing(false);
+    } catch (e) {
+      console.error("파일 저장 실패:", e);
+      alert("파일 저장 실패: " + e.message);
+    }
+  };
+
+  const submitFeedback = async () => {
+    if (!feedback.trim()) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/project/${projectId}/feedback`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          feedback,
+          file_path: selectedFile
+        })
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.detail || "피드백 제출 실패");
+      }
+
+      const data = await res.json();
+      alert("피드백이 반영되었습니다.");
+      setFeedback("");
+
+      // 수정된 파일 다시 로드
+      if (selectedFile && data.modified_files.includes(selectedFile)) {
+        await loadFile(selectedFile);
+      }
+
+      // 파일 트리 다시 로드
+      await loadFileTree(projectId);
+    } catch (e) {
+      console.error("피드백 제출 실패:", e);
+      alert("피드백 제출 실패: " + e.message);
+    }
+  };
+
+  const downloadProject = () => {
+    if (!projectId) return;
+    window.open(`${API_BASE}/api/project/${projectId}/download`, '_blank');
+  };
+
+  const renderFileTree = (nodes, level = 0) => {
+    return nodes.map((node, idx) => (
+      <div key={idx} style={{ marginLeft: level * 16 }}>
+        {node.type === "directory" ? (
+          <div>
+            <span style={{ cursor: "pointer", color: "#fbbf24" }}>
+              📁 {node.name}
+            </span>
+            {node.children && renderFileTree(node.children, level + 1)}
+          </div>
+        ) : (
+          <div
+            style={{
+              cursor: "pointer",
+              color: selectedFile === node.path ? "#6366f1" : "#a5b4fc"
+            }}
+            onClick={() => loadFile(node.path)}
+          >
+            📄 {node.name}
+          </div>
+        )}
+      </div>
+    ));
+  };
+
   return (
     <div className="page">
       <header className="hero card">
         <p className="eyebrow">Claude Agent Platform</p>
-        <h1>대화형 요구사항 수집 + 승인 기반 POC 실행</h1>
+        <h1>대화형 요구사항 수집 + AI 기반 POC 자동 생성</h1>
         <p className="sub">
-          LLM 대화로 요구사항을 만들고, 옵션 선택과 최종 검토 후 OK 승인 시점에만 코드를 생성합니다.
+          요구사항을 자연어로 입력하면 Claude CLI가 프로덕션 수준의 완전한 코드를 자동으로 생성합니다.
         </p>
+        <div style={{
+          marginTop: "16px",
+          padding: "12px 20px",
+          background: "rgba(99, 102, 241, 0.2)",
+          borderRadius: "8px",
+          border: "1px solid rgba(99, 102, 241, 0.4)",
+          display: "inline-block"
+        }}>
+          <span style={{ fontSize: "0.9rem", color: "var(--text-secondary)" }}>
+            🤖 <strong>Claude Sonnet 4</strong>로 고품질 코드 자동 생성
+          </span>
+        </div>
       </header>
 
       <section className="card">
-        <h2>1) LLM 연결</h2>
-        <div className="providerTabs">
-          {providers.map((p) => {
-            const s = connStatus[p.id];
-            const dotClass = s === "연결됨" ? "dot ok" : s ? "dot warn" : "dot";
-            return (
-              <button
-                key={p.id}
-                className={`providerTab ${providerId === p.id ? "active" : ""}`}
-                onClick={() => setProviderId(p.id)}
-              >
-                <span className={dotClass} />
-                {p.label}
-              </button>
-            );
-          })}
-        </div>
-
-        <p className="hint">{currentProvider.desc}</p>
-
-        <div className="providerForm">
-          {currentProvider.fields.map((f) => (
-            <div className="formRow" key={f.key}>
-              <label>{f.label}</label>
-              {f.type === "select" ? (
-                <select
-                  value={currentConfig[f.key]}
-                  onChange={(e) => updateConfigField(f.key, e.target.value)}
-                >
-                  {f.options.map((opt) => (
-                    <option key={opt}>{opt}</option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  type={f.type}
-                  value={currentConfig[f.key]}
-                  placeholder={f.placeholder}
-                  onChange={(e) => updateConfigField(f.key, e.target.value)}
-                />
-              )}
+        <h2>1) AI 코드 생성 시스템</h2>
+        <div style={{
+          background: "rgba(16, 185, 129, 0.1)",
+          border: "2px solid rgba(16, 185, 129, 0.3)",
+          borderRadius: "12px",
+          padding: "20px",
+          marginBottom: "16px"
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
+            <span style={{ fontSize: "2rem" }}>🤖</span>
+            <div>
+              <h3 style={{ margin: 0, fontSize: "1.1rem", color: "var(--text-primary)" }}>
+                Claude CLI 자동 사용
+              </h3>
+              <p style={{ margin: "4px 0 0", fontSize: "0.85rem", color: "var(--text-tertiary)" }}>
+                별도 설정 없이 Claude Sonnet 4가 자동으로 코드를 생성합니다
+              </p>
             </div>
-          ))}
+          </div>
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+            gap: "12px",
+            marginTop: "16px"
+          }}>
+            <div style={{
+              background: "rgba(255, 255, 255, 0.05)",
+              padding: "12px",
+              borderRadius: "8px"
+            }}>
+              <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "4px" }}>
+                모델
+              </div>
+              <div style={{ fontSize: "0.95rem", fontWeight: "600", color: "var(--text-primary)" }}>
+                Claude Sonnet 4
+              </div>
+            </div>
+            <div style={{
+              background: "rgba(255, 255, 255, 0.05)",
+              padding: "12px",
+              borderRadius: "8px"
+            }}>
+              <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "4px" }}>
+                코드 품질
+              </div>
+              <div style={{ fontSize: "0.95rem", fontWeight: "600", color: "var(--text-primary)" }}>
+                프로덕션 수준
+              </div>
+            </div>
+            <div style={{
+              background: "rgba(255, 255, 255, 0.05)",
+              padding: "12px",
+              borderRadius: "8px"
+            }}>
+              <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "4px" }}>
+                생성 시간
+              </div>
+              <div style={{ fontSize: "0.95rem", fontWeight: "600", color: "var(--text-primary)" }}>
+                1-2분
+              </div>
+            </div>
+          </div>
         </div>
 
-        <div className="actionRow">
-          <button onClick={testConnection}>연결 확인</button>
-          <span className={`statusBadge ${isConnected ? "ok" : "warn"}`}>
-            상태: {providerStatus}
-          </span>
-        </div>
+        <details style={{ marginTop: "16px" }}>
+          <summary style={{
+            cursor: "pointer",
+            padding: "12px",
+            background: "rgba(255, 255, 255, 0.05)",
+            borderRadius: "8px",
+            fontWeight: "500",
+            color: "var(--text-secondary)"
+          }}>
+            고급 설정 (선택사항)
+          </summary>
+          <div style={{ marginTop: "12px", padding: "16px", background: "rgba(255, 255, 255, 0.03)", borderRadius: "8px" }}>
+            <div className="providerTabs">
+              {providers.map((p) => {
+                const s = connStatus[p.id];
+                const dotClass = s === "연결됨" ? "dot ok" : s ? "dot warn" : "dot";
+                return (
+                  <button
+                    key={p.id}
+                    className={`providerTab ${providerId === p.id ? "active" : ""}`}
+                    onClick={() => setProviderId(p.id)}
+                  >
+                    <span className={dotClass} />
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <p className="hint">{currentProvider.desc}</p>
+
+            <div className="providerForm">
+              {currentProvider.fields.map((f) => (
+                <div className="formRow" key={f.key}>
+                  <label>{f.label}</label>
+                  {f.type === "select" ? (
+                    <select
+                      value={currentConfig[f.key]}
+                      onChange={(e) => updateConfigField(f.key, e.target.value)}
+                    >
+                      {f.options.map((opt) => (
+                        <option key={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type={f.type}
+                      value={currentConfig[f.key]}
+                      placeholder={f.placeholder}
+                      onChange={(e) => updateConfigField(f.key, e.target.value)}
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="actionRow">
+              <button onClick={testConnection}>연결 확인</button>
+              <span className={`statusBadge ${isConnected ? "ok" : "warn"}`}>
+                상태: {providerStatus}
+              </span>
+            </div>
+          </div>
+        </details>
       </section>
 
       <section className="card">
@@ -931,6 +1196,177 @@ function App() {
           </div>
         )}
       </section>
+
+      {/* Step 7: 프로젝트 실행 및 미리보기 */}
+      {status === "packaged" && projectUrl && (
+        <section className="card">
+          <h2>7) 프로젝트 미리보기</h2>
+          <div style={{ marginBottom: "16px" }}>
+            <p style={{ color: "var(--text-secondary)", marginBottom: "12px" }}>
+              생성된 프로젝트가 실행되었습니다. 아래 URL에서 확인하세요.
+            </p>
+            <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+              <input
+                type="text"
+                value={projectUrl}
+                readOnly
+                style={{ flex: 1 }}
+              />
+              <button onClick={() => window.open(projectUrl, '_blank')}>
+                🔗 열기
+              </button>
+            </div>
+          </div>
+          <div style={{
+            border: "2px solid var(--border-color)",
+            borderRadius: "var(--radius-md)",
+            overflow: "hidden",
+            height: "400px"
+          }}>
+            <iframe
+              src={projectUrl}
+              style={{
+                width: "100%",
+                height: "100%",
+                border: "none"
+              }}
+              title="프로젝트 미리보기"
+            />
+          </div>
+        </section>
+      )}
+
+      {/* Step 8: 코드 뷰어 및 편집기 */}
+      {status === "packaged" && projectId && (
+        <section className="card">
+          <h2>8) 코드 뷰어 및 편집</h2>
+          <div style={{ display: "grid", gridTemplateColumns: "250px 1fr", gap: "16px" }}>
+            {/* 파일 트리 */}
+            <div style={{
+              background: "rgba(0, 0, 0, 0.3)",
+              border: "1px solid var(--border-color)",
+              borderRadius: "var(--radius-md)",
+              padding: "16px",
+              maxHeight: "500px",
+              overflowY: "auto"
+            }}>
+              <h3 style={{ fontSize: "0.9rem", marginBottom: "12px" }}>📁 파일</h3>
+              {fileTree.length > 0 ? renderFileTree(fileTree) : <p style={{ color: "var(--text-muted)" }}>로딩 중...</p>}
+            </div>
+
+            {/* 파일 내용 */}
+            <div>
+              {selectedFile ? (
+                <>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                    <h3 style={{ fontSize: "0.9rem", margin: 0 }}>
+                      📄 {selectedFile.split('/').pop()}
+                    </h3>
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      {!isEditing && (
+                        <button onClick={() => setIsEditing(true)}>
+                          ✏️ 편집
+                        </button>
+                      )}
+                      {isEditing && (
+                        <>
+                          <button onClick={saveFile}>
+                            💾 저장
+                          </button>
+                          <button className="ghost" onClick={() => {
+                            setIsEditing(false);
+                            loadFile(selectedFile);
+                          }}>
+                            취소
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <textarea
+                    value={fileContent}
+                    onChange={(e) => setFileContent(e.target.value)}
+                    readOnly={!isEditing}
+                    style={{
+                      width: "100%",
+                      height: "450px",
+                      fontFamily: "var(--font-body)",
+                      fontSize: "0.85rem",
+                      padding: "12px",
+                      background: "rgba(0, 0, 0, 0.3)",
+                      border: "1px solid var(--border-color)",
+                      borderRadius: "var(--radius-md)",
+                      color: "var(--text-primary)",
+                      resize: "none"
+                    }}
+                  />
+                </>
+              ) : (
+                <div style={{
+                  height: "500px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: "var(--text-muted)",
+                  background: "rgba(0, 0, 0, 0.2)",
+                  borderRadius: "var(--radius-md)"
+                }}>
+                  파일을 선택하세요
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Step 9: 피드백 및 다운로드 */}
+      {status === "packaged" && projectId && (
+        <section className="card">
+          <h2>9) 피드백 및 다운로드</h2>
+
+          <div style={{ marginBottom: "24px" }}>
+            <h3 style={{ fontSize: "1rem", marginBottom: "12px" }}>💬 피드백 제출</h3>
+            <p style={{ color: "var(--text-tertiary)", fontSize: "0.9rem", marginBottom: "12px" }}>
+              코드에 대한 피드백을 제출하면 LLM이 자동으로 수정합니다.
+            </p>
+            <textarea
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+              placeholder="예: 로그인 버튼 색상을 파란색으로 변경해주세요"
+              style={{
+                width: "100%",
+                height: "120px",
+                marginBottom: "12px",
+                padding: "12px",
+                fontSize: "0.9rem",
+                resize: "vertical"
+              }}
+            />
+            <button
+              onClick={submitFeedback}
+              disabled={!feedback.trim()}
+              style={{ marginRight: "8px" }}
+            >
+              📤 피드백 제출
+            </button>
+            {selectedFile && (
+              <span style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>
+                현재 파일: {selectedFile}
+              </span>
+            )}
+          </div>
+
+          <div>
+            <h3 style={{ fontSize: "1rem", marginBottom: "12px" }}>📦 프로젝트 다운로드</h3>
+            <p style={{ color: "var(--text-tertiary)", fontSize: "0.9rem", marginBottom: "12px" }}>
+              완성된 프로젝트를 ZIP 파일로 다운로드하세요.
+            </p>
+            <button onClick={downloadProject}>
+              ⬇️ 프로젝트 다운로드 (ZIP)
+            </button>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

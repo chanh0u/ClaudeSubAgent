@@ -1,0 +1,334 @@
+```html
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TODO Calendar</title>
+    <style>
+        :root {
+            --primary-color: #2c3e50;
+            --accent-color: #3498db;
+            --bg-color: #ecf0f1;
+            --text-color: #2c3e50;
+            --card-bg: #ffffff;
+            --border-radius: 8px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6;
+            padding: 20px;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        header h1 {
+            color: var(--primary-color);
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        main {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            justify-content: space-between;
+        }
+
+        .calendar-container, .task-list {
+            flex: 1 1 300px;
+            background: var(--card-bg);
+            border-radius: var(--border-radius);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            padding: 20px;
+        }
+
+        .calendar {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 10px;
+        }
+
+        .calendar-header {
+            grid-column: span 7;
+            text-align: center;
+            font-size: 1.2em;
+            margin-bottom: 15px;
+        }
+
+        .calendar-day {
+            padding: 15px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .calendar-day:hover {
+            background-color: var(--accent-color);
+            color: white;
+        }
+
+        .calendar-day.selected {
+            background-color: var(--accent-color);
+            color: white;
+            font-weight: bold;
+        }
+
+        .task-form {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .task-form input[type="text"] {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: var(--border-radius);
+        }
+
+        .task-form button {
+            padding: 10px 15px;
+            border: none;
+            border-radius: var(--border-radius);
+            background-color: var(--accent-color);
+            color: white;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+
+        .task-form button:hover {
+            background-color: #2980b9;
+        }
+
+        .task-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .task-item {
+            background: #f9f9f9;
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: var(--border-radius);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .task-item .details {
+            flex: 1;
+        }
+
+        .task-item .actions {
+            display: flex;
+            gap: 5px;
+        }
+
+        .task-item .actions button {
+            background: none;
+            border: none;
+            color: var(--accent-color);
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .task-item .actions button:hover {
+            text-decoration: underline;
+        }
+
+        footer {
+            text-align: center;
+            margin-top: 40px;
+            font-size: 0.9em;
+            color: #888;
+        }
+
+        @media (max-width: 768px) {
+            main {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>TODO Calendar</h1>
+    </header>
+    <main>
+        <div class="calendar-container">
+            <div class="calendar-header" id="calendar-header">April 2023</div>
+            <div class="calendar" id="calendar">
+                <div class="calendar-day" data-day="0">Sun</div>
+                <div class="calendar-day" data-day="1">Mon</div>
+                <div class="calendar-day" data-day="2">Tue</div>
+                <div class="calendar-day" data-day="3">Wed</div>
+                <div class="calendar-day" data-day="4">Thu</div>
+                <div class="calendar-day" data-day="5">Fri</div>
+                <div class="calendar-day" data-day="6">Sat</div>
+            </div>
+            <div class="calendar-nav">
+                <button id="prev-month">◀</button>
+                <button id="next-month">▶</button>
+            </div>
+        </div>
+        <div class="task-list" id="task-list">
+            <div class="task-form">
+                <input type="text" id="task-input" placeholder="새로운 일정 입력...">
+                <button onclick="addTask()">추가</button>
+            </div>
+            <div id="task-items"></div>
+        </div>
+    </main>
+    <footer>
+        &copy; 2023 TODO Calendar. 모든 권리 보유.
+    </footer>
+
+    <script>
+        const calendar = document.getElementById('calendar');
+        const calendarHeader = document.getElementById('calendar-header');
+        const prevMonthBtn = document.getElementById('prev-month');
+        const nextMonthBtn = document.getElementById('next-month');
+        const taskInput = document.getElementById('task-input');
+        const taskItemsContainer = document.getElementById('task-items');
+
+        let currentDate = new Date();
+        let currentMonth = currentDate.getMonth();
+        let currentYear = currentDate.getFullYear();
+
+        function renderCalendar() {
+            const firstDay = new Date(currentYear, currentMonth, 1);
+            const lastDay = new Date(currentYear, currentMonth + 1, 0);
+            const daysInMonth = lastDay.getDate();
+            const startDay = firstDay.getDay();
+
+            const calendarDays = document.querySelectorAll('.calendar-day');
+            calendarDays[0].textContent = 'Sun';
+            calendarDays[1].textContent = 'Mon';
+            calendarDays[2].textContent = 'Tue';
+            calendarDays[3].textContent = 'Wed';
+            calendarDays[4].textContent = 'Thu';
+            calendarDays[5].textContent = 'Fri';
+            calendarDays[6].textContent = 'Sat';
+
+            for (let i = 0; i < calendarDays.length; i++) {
+                calendarDays[i].classList.remove('selected');
+            }
+
+            let day = 1;
+            for (let i = startDay; i < startDay + daysInMonth; i++) {
+                const dayEl = calendarDays[i];
+                dayEl.textContent = day;
+                dayEl.dataset.date = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                day++;
+            }
+
+            calendarHeader.textContent = `${new Date(currentYear, currentMonth, 1).toLocaleString('ko-KR', { month: 'long' })} ${currentYear}`;
+        }
+
+        function updateTasks() {
+            const tasks = JSON.parse(localStorage.getItem('tasks') || '{}');
+            taskItemsContainer.innerHTML = '';
+            const selectedDate = document.querySelector('.calendar-day.selected')?.dataset.date;
+            
+            if (selectedDate) {
+                const tasksForDate = tasks[selectedDate] || [];
+                tasksForDate.forEach((task, index) => {
+                    const taskEl = document.createElement('div');
+                    taskEl.className = 'task-item';
+                    taskEl.innerHTML = `
+                        <div class="details">${task.description}</div>
+                        <div class="actions">
+                            <button onclick="editTask(${index}, '${selectedDate}')">수정</button>
+                            <button onclick="deleteTask(${index}, '${selectedDate}')">삭제</button>
+                        </div>
+                    `;
+                    taskItemsContainer.appendChild(taskEl);
+                });
+            }
+        }
+
+        function addTask() {
+            const description = taskInput.value.trim();
+            if (!description) return;
+            
+            const selectedDate = document.querySelector('.calendar-day.selected')?.dataset.date;
+            if (!selectedDate) return;
+
+            const tasks = JSON.parse(localStorage.getItem('tasks') || '{}');
+            if (!tasks[selectedDate]) {
+                tasks[selectedDate] = [];
+            }
+            tasks[selectedDate].push({ description, date: selectedDate });
+            localStorage.setItem('tasks', JSON.stringify(tasks));
+            taskInput.value = '';
+            updateTasks();
+        }
+
+        function editTask(index, date) {
+            const tasks = JSON.parse(localStorage.getItem('tasks') || '{}');
+            const task = tasks[date][index];
+            const newDesc = prompt('수정할 일정을 입력하세요:', task.description);
+            if (newDesc !== null) {
+                task.description = newDesc;
+                localStorage.setItem('tasks', JSON.stringify(tasks));
+                updateTasks();
+            }
+        }
+
+        function deleteTask(index, date) {
+            const tasks = JSON.parse(localStorage.getItem('tasks') || '{}');
+            tasks[date].splice(index, 1);
+            localStorage.setItem('tasks', JSON.stringify(tasks));
+            updateTasks();
+        }
+
+        prevMonthBtn.addEventListener('click', () => {
+            currentMonth--;
+            if (currentMonth < 0) {
+                currentMonth = 11;
+                currentYear--;
+            }
+            renderCalendar();
+            updateTasks();
+        });
+
+        nextMonthBtn.addEventListener('click', () => {
+            currentMonth++;
+            if (currentMonth > 11) {
+                currentMonth = 0;
+                currentYear++;
+            }
+            renderCalendar();
+            updateTasks();
+        });
+
+        calendar.addEventListener('click', (e) => {
+            if (e.target.classList.contains('calendar-day')) {
+                const dayEl = e.target;
+                const selected = document.querySelector('.calendar-day.selected');
+                if (selected) selected.classList.remove('selected');
+                dayEl.classList.add('selected');
+                updateTasks();
+            }
+        });
+
+        // Initial render
+        renderCalendar();
+        updateTasks();
+    </script>
+</body>
+</html>
+```
