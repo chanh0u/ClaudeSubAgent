@@ -119,6 +119,20 @@ function App() {
   const [approved, setApproved] = useState(false);
   const [status, setStatus] = useState("draft");
 
+  // 파이프라인 상태 관리
+  const [pipelineSteps, setPipelineSteps] = useState([
+    { id: "parsing", label: "문서 파싱", icon: "📄", status: "pending", progress: 0 },
+    { id: "planning", label: "계획 수립", icon: "📋", status: "pending", progress: 0 },
+    { id: "team", label: "팀 구성 배정", icon: "👥", status: "pending", progress: 0 },
+    { id: "coding", label: "코드 생성", icon: "💻", status: "pending", progress: 0 },
+    { id: "testing", label: "테스트 실행", icon: "🧪", status: "pending", progress: 0 },
+    { id: "deploy", label: "배포 준비", icon: "🎉", status: "pending", progress: 0 }
+  ]);
+  const [logs, setLogs] = useState([]);
+  const [overallProgress, setOverallProgress] = useState(0);
+  const [isPipelineRunning, setIsPipelineRunning] = useState(false);
+  const [isPipelinePaused, setIsPipelinePaused] = useState(false);
+
   const currentProvider = providers.find((p) => p.id === providerId);
   const currentConfig = configs[providerId];
   const providerStatus = connStatus[providerId] || "미연결";
@@ -376,10 +390,164 @@ function App() {
     setStatus("draft");
   };
 
-  const startService = () => {
+  const addLog = (message, type = "info") => {
+    const timestamp = new Date().toLocaleTimeString("ko-KR");
+    setLogs((prev) => [...prev, { timestamp, message, type }]);
+  };
+
+  const updateStepStatus = (stepId, status, progress = 0) => {
+    setPipelineSteps((prev) =>
+      prev.map((step) =>
+        step.id === stepId ? { ...step, status, progress } : step
+      )
+    );
+  };
+
+  const simulatePipelineStep = async (stepId, stepLabel, duration, subtasks) => {
+    updateStepStatus(stepId, "in-progress", 0);
+    addLog(`${stepLabel} 시작...`, "info");
+
+    for (let i = 0; i < subtasks.length; i++) {
+      if (isPipelinePaused) {
+        addLog("파이프라인 일시정지됨", "warn");
+        return false;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, duration / subtasks.length));
+      const progress = Math.round(((i + 1) / subtasks.length) * 100);
+      updateStepStatus(stepId, "in-progress", progress);
+      addLog(`→ ${subtasks[i]}`, "progress");
+    }
+
+    updateStepStatus(stepId, "completed", 100);
+    addLog(`✓ ${stepLabel} 완료`, "success");
+    return true;
+  };
+
+  const startService = async () => {
     if (!approved) return;
     setStatus("running");
-    setTimeout(() => setStatus("packaged"), 1400);
+    setIsPipelineRunning(true);
+    setIsPipelinePaused(false);
+    setLogs([]);
+    setOverallProgress(0);
+
+    // 모든 단계 초기화
+    setPipelineSteps((prev) =>
+      prev.map((step) => ({ ...step, status: "pending", progress: 0 }))
+    );
+
+    const pipeline = [
+      {
+        id: "parsing",
+        label: "문서 파싱",
+        duration: 3000,
+        subtasks: [
+          "요구사항 문서 분석 중...",
+          "8개 섹션 인식됨",
+          "구조화된 데이터 추출 중...",
+          "parsed-spec.json 생성 완료"
+        ]
+      },
+      {
+        id: "planning",
+        label: "계획 수립",
+        duration: 4000,
+        subtasks: [
+          "프로젝트 구조 분석 중...",
+          "WBS 작성 중 (1/3)",
+          "WBS 작성 중 (2/3)",
+          "WBS 작성 중 (3/3)",
+          "workspace-map.json 생성 중...",
+          "project-plan.md 작성 완료"
+        ]
+      },
+      {
+        id: "team",
+        label: "팀 구성 배정",
+        duration: 2500,
+        subtasks: [
+          `${selectedAgents.length}명의 개발자 배정 중...`,
+          "역할 분담 최적화 중...",
+          "파일 소유권 맵핑 완료",
+          "팀 구성 완료"
+        ]
+      },
+      {
+        id: "coding",
+        label: "코드 생성",
+        duration: 8000,
+        subtasks: [
+          "Backend 개발 시작...",
+          "FastAPI 서버 구조 생성 중...",
+          "API 엔드포인트 구현 중...",
+          "Frontend 개발 시작...",
+          "React 컴포넌트 생성 중...",
+          "UI/UX 스타일링 중...",
+          "Database 스키마 생성 중...",
+          "코드 생성 완료"
+        ]
+      },
+      {
+        id: "testing",
+        label: "테스트 실행",
+        duration: 3500,
+        subtasks: [
+          "단위 테스트 실행 중...",
+          "통합 테스트 실행 중...",
+          "API 엔드포인트 검증 중...",
+          "테스트 완료 (100% 통과)"
+        ]
+      },
+      {
+        id: "deploy",
+        label: "배포 준비",
+        duration: 2000,
+        subtasks: [
+          "Docker 이미지 빌드 중...",
+          "환경 설정 파일 생성 중...",
+          "배포 문서 작성 중...",
+          "프로젝트 패키징 완료"
+        ]
+      }
+    ];
+
+    let completedSteps = 0;
+    for (const step of pipeline) {
+      const success = await simulatePipelineStep(
+        step.id,
+        step.label,
+        step.duration,
+        step.subtasks
+      );
+
+      if (!success) {
+        setIsPipelineRunning(false);
+        return;
+      }
+
+      completedSteps++;
+      setOverallProgress(Math.round((completedSteps / pipeline.length) * 100));
+    }
+
+    setStatus("packaged");
+    setIsPipelineRunning(false);
+    addLog("🎉 프로젝트 생성 완료!", "success");
+  };
+
+  const togglePipeline = () => {
+    setIsPipelinePaused((prev) => !prev);
+    addLog(isPipelinePaused ? "파이프라인 재개됨" : "파이프라인 일시정지됨", "warn");
+  };
+
+  const cancelPipeline = () => {
+    setIsPipelineRunning(false);
+    setIsPipelinePaused(false);
+    setStatus("approved");
+    setPipelineSteps((prev) =>
+      prev.map((step) => ({ ...step, status: "pending", progress: 0 }))
+    );
+    addLog("❌ 파이프라인 취소됨", "error");
   };
 
   return (
@@ -569,34 +737,199 @@ function App() {
         )}
       </section>
 
-      <section className="card">
-        <h2>5) 최종 요약 검토</h2>
-        <pre className="summary">{`LLM: ${summary.provider}
-요구사항: ${summary.requirements}
-프로젝트 유형: ${summary.projectType}
-아키텍처 특성: ${summary.features}
-개발팀 (${selectedAgents.length}명): ${summary.agents}`}</pre>
-        <div className="actionRow">
-          <button onClick={createReview} disabled={!canReview}>
-            요약본 생성
+      <section className="card review-summary">
+        <div className="review-header">
+          <h2>최종 요약 검토</h2>
+          <p className="review-subtitle">프로젝트 생성 전 마지막 확인 단계입니다</p>
+        </div>
+
+        <div className="summary-grid">
+          <div className="summary-section">
+            <div className="section-label">요구사항</div>
+            <div className="section-content">{summary.requirements}</div>
+          </div>
+
+          <div className="summary-section">
+            <div className="section-label">LLM 제공자</div>
+            <div className="section-content status-badge">{summary.provider}</div>
+          </div>
+
+          <div className="summary-section">
+            <div className="section-label">프로젝트 유형</div>
+            <div className="section-content">{summary.projectType}</div>
+          </div>
+
+          <div className="summary-section">
+            <div className="section-label">아키텍처 특성</div>
+            <div className="section-content">{summary.features}</div>
+          </div>
+
+          <div className="summary-section full-width">
+            <div className="section-label">개발팀 구성 ({selectedAgents.length}명)</div>
+            <div className="section-content team-list">
+              {selectedAgents.length > 0 ? (
+                agents
+                  .filter(a => selectedAgents.includes(a.id))
+                  .map(a => (
+                    <span key={a.id} className="team-member">
+                      {a.name}
+                      <span className="member-role">{a.specialty}</span>
+                    </span>
+                  ))
+              ) : (
+                <span className="empty-state">미선택</span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="review-actions">
+          <button
+            className="btn-primary"
+            onClick={approve}
+            disabled={!canReview}
+          >
+            <span className="btn-icon">✓</span>
+            확인 완료
           </button>
-          <button onClick={approve} disabled={!reviewed}>
-            검토 완료 (OK)
-          </button>
-          <button className="ghost" onClick={requestRevision}>
+          <button
+            className="btn-secondary"
+            onClick={requestRevision}
+            disabled={!canReview}
+          >
+            <span className="btn-icon">↻</span>
             수정 요청
           </button>
         </div>
       </section>
 
-      <section className="card">
-        <h2>6) 서비스 시작</h2>
-        <p>
-          상태: <strong>{status}</strong>
-        </p>
-        <button onClick={startService} disabled={!approved || status === "running"}>
-          서비스 시작 (POC 코드 작성)
-        </button>
+      <section className="card pipeline-section">
+        <div className="pipeline-header">
+          <h2>6) 프로젝트 생성</h2>
+          {!isPipelineRunning && status !== "packaged" && (
+            <button
+              className="btn-start-pipeline"
+              onClick={startService}
+              disabled={!approved}
+            >
+              <span className="btn-icon">🚀</span>
+              서비스 시작 (POC 코드 작성)
+            </button>
+          )}
+        </div>
+
+        {isPipelineRunning || status === "packaged" ? (
+          <>
+            {/* 파이프라인 스텝 시각화 */}
+            <div className="pipeline-container">
+              <div className="pipeline-steps">
+                {pipelineSteps.map((step, index) => (
+                  <div key={step.id} className="pipeline-step-wrapper">
+                    <div
+                      className={`pipeline-step ${step.status}`}
+                    >
+                      <div className="step-icon">{step.icon}</div>
+                      <div className="step-content">
+                        <div className="step-label">{step.label}</div>
+                        {step.status === "in-progress" && (
+                          <div className="step-progress-bar">
+                            <div
+                              className="step-progress-fill"
+                              style={{ width: `${step.progress}%` }}
+                            />
+                          </div>
+                        )}
+                        {step.status === "completed" && (
+                          <div className="step-status-badge completed">완료</div>
+                        )}
+                        {step.status === "in-progress" && (
+                          <div className="step-status-badge in-progress">
+                            진행중 ({step.progress}%)
+                          </div>
+                        )}
+                        {step.status === "pending" && (
+                          <div className="step-status-badge pending">대기</div>
+                        )}
+                      </div>
+                    </div>
+                    {index < pipelineSteps.length - 1 && (
+                      <div className={`pipeline-connector ${step.status === "completed" ? "completed" : ""}`} />
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* 전체 진행률 */}
+            <div className="overall-progress">
+              <div className="progress-header">
+                <span className="progress-label">전체 진행률</span>
+                <span className="progress-percentage">{overallProgress}%</span>
+              </div>
+              <div className="progress-bar-container">
+                <div
+                  className="progress-bar-fill"
+                  style={{ width: `${overallProgress}%` }}
+                />
+              </div>
+            </div>
+
+            {/* 실시간 로그 */}
+            <div className="pipeline-logs">
+              <div className="logs-header">
+                <span className="logs-title">실시간 로그</span>
+                <span className="logs-count">{logs.length} 항목</span>
+              </div>
+              <div className="logs-container">
+                {logs.map((log, index) => (
+                  <div key={index} className={`log-entry ${log.type}`}>
+                    <span className="log-timestamp">[{log.timestamp}]</span>
+                    <span className="log-message">{log.message}</span>
+                  </div>
+                ))}
+                {logs.length === 0 && (
+                  <div className="logs-empty">로그 대기 중...</div>
+                )}
+              </div>
+            </div>
+
+            {/* 컨트롤 버튼 */}
+            {isPipelineRunning && (
+              <div className="pipeline-controls">
+                <button
+                  className="btn-control pause"
+                  onClick={togglePipeline}
+                >
+                  {isPipelinePaused ? "▶ 재개" : "⏸ 일시정지"}
+                </button>
+                <button
+                  className="btn-control cancel"
+                  onClick={cancelPipeline}
+                >
+                  ✕ 취소
+                </button>
+              </div>
+            )}
+
+            {status === "packaged" && (
+              <div className="pipeline-success">
+                <div className="success-icon">🎉</div>
+                <h3>프로젝트 생성 완료!</h3>
+                <p>POC 코드가 성공적으로 생성되었습니다.</p>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="pipeline-placeholder">
+            <div className="placeholder-icon">🚀</div>
+            <p className="placeholder-text">
+              "서비스 시작" 버튼을 클릭하여 프로젝트 생성을 시작하세요.
+            </p>
+            <p className="placeholder-hint">
+              승인된 요구사항을 기반으로 자동으로 코드가 생성됩니다.
+            </p>
+          </div>
+        )}
       </section>
     </div>
   );
