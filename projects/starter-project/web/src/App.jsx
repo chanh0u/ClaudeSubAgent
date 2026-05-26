@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from "react";
 
-const API_BASE = "http://localhost:3001";
+const API_BASE = "http://localhost:3003";
 
 const projectTypeOptions = [
   { id: "web", label: "🌐 Web Application", desc: "React/Vue 기반 웹 서비스" },
@@ -71,6 +71,21 @@ const providers = [
       { key: "model", label: "모델", type: "text", placeholder: "qwen3:8b, qwen2.5-coder ..." }
     ],
     defaults: { endpoint: "http://llm.aicentro.ai.kr", model: "qwen3:8b" }
+  },
+  {
+    id: "manus",
+    label: "Manus",
+    desc: "Manus AI API",
+    fields: [
+      { key: "apiKey", label: "API Key", type: "password", placeholder: "sk-..." },
+      {
+        key: "model",
+        label: "Agent Profile",
+        type: "select",
+        options: ["manus-1.6", "manus-1.6-lite", "manus-1.6-max"]
+      }
+    ],
+    defaults: { apiKey: "", model: "manus-1.6" }
   }
 ];
 

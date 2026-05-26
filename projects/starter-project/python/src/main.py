@@ -1,14 +1,25 @@
 import logging
 import os
 import pathlib
+import uuid
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+# Claude CLI 통합
+from .claude_subprocess.claude_cli import ClaudeSubprocess, verify_claude
+from .adapters.openai_to_cli import openai_to_cli
+from .adapters.cli_to_openai import (
+    cli_result_to_openai,
+    create_streaming_chunk,
+    create_done_chunk,
+)
 
 # 로깅 설정
 log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -60,6 +71,19 @@ class AgentProfile(BaseModel):
     defaultConditions: str
 
 
+# OpenAI 호환 API 모델
+class OpenAIMessage(BaseModel):
+    role: str
+    content: Union[str, List[Dict[str, Any]]]
+
+
+class OpenAIChatRequest(BaseModel):
+    model: str
+    messages: List[OpenAIMessage]
+    stream: bool = False
+    user: Optional[str] = None
+
+
 # Helper functions
 def to_role_messages(messages: List[Message]) -> List[Dict[str, str]]:
     """메시지를 API 형식으로 변환"""
@@ -70,6 +94,26 @@ def to_role_messages(messages: List[Message]) -> List[Dict[str, str]]:
         }
         for msg in messages
     ]
+
+
+def normalize_chat_config(provider: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize frontend config keys to backend handler signatures."""
+    normalized = dict(config or {})
+
+    if "apiKey" in normalized and "api_key" not in normalized:
+        normalized["api_key"] = normalized.pop("apiKey")
+
+    if provider in {"claude", "codex", "manus"}:
+        return {
+            "api_key": normalized.get("api_key", ""),
+            "model": normalized.get("model", ""),
+        }
+    if provider == "local":
+        return {
+            "endpoint": normalized.get("endpoint", ""),
+            "model": normalized.get("model", ""),
+        }
+    return normalized
 
 
 async def call_claude(api_key: str, model: str, messages: List[Message]) -> str:
@@ -135,6 +179,132 @@ async def call_openai(api_key: str, model: str, messages: List[Message]) -> str:
             raise HTTPException(status_code=500, detail=error_msg)
         except Exception as e:
             logger.error(f"❌ OpenAI API 예외 발생: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+async def call_manus(api_key: str, model: str, messages: List[Message]) -> str:
+    """Manus API 호출 (Task 기반)"""
+    logger.info(f"🤖 Manus API 호출 시작 - 모델: {model}, 메시지 수: {len(messages)}")
+
+    # 메시지를 content로 변환 (마지막 사용자 메시지만 사용)
+    user_content = messages[-1].text if messages else "Hello"
+
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        try:
+            # 1. Task 생성
+            logger.info(f"📤 Task 생성 중...")
+            create_response = await client.post(
+                "https://api.manus.ai/v2/task.create",
+                headers={
+                    "content-type": "application/json",
+                    "x-manus-api-key": api_key,
+                },
+                json={
+                    "message": {
+                        "content": [{"type": "text", "text": user_content}]
+                    },
+                    "agent_profile": model,
+                    "hide_in_task_list": True,
+                },
+            )
+            create_response.raise_for_status()
+            task_data = create_response.json()
+
+            if not task_data.get("ok"):
+                error = task_data.get("error", {})
+                raise Exception(f"Task 생성 실패: {error.get('message', 'Unknown error')}")
+
+            task_id = task_data.get("task_id")
+            if not task_id:
+                raise Exception(f"Task ID를 받지 못했습니다: {task_data}")
+
+            logger.info(f"✅ Task 생성됨 - ID: {task_id}")
+
+            # 2. Task 메시지 폴링 (최대 3분)
+            import asyncio
+            result_text = ""
+            processed_message_ids = set()
+            terminal_statuses = {"stopped", "completed", "done", "finished", "succeeded", "success"}
+            for i in range(60):  # 60번 시도 (3초마다)
+                await asyncio.sleep(3)
+                logger.debug(f"📡 Task 메시지 확인 중... ({i+1}/60)")
+
+                messages_response = await client.get(
+                    "https://api.manus.ai/v2/task.listMessages",
+                    headers={"x-manus-api-key": api_key},
+                    params={"task_id": task_id, "verbose": False},
+                )
+                messages_response.raise_for_status()
+                messages_data = messages_response.json()
+
+                if not messages_data.get("ok"):
+                    error = messages_data.get("error", {})
+                    raise Exception(f"메시지 조회 실패: {error.get('message', 'Unknown error')}")
+
+                messages_list = messages_data.get("messages", [])
+
+                # 상태 확인 및 결과 추출
+                for msg in messages_list:
+                    msg_id = str(msg.get("id", ""))
+                    if msg_id and msg_id in processed_message_ids:
+                        continue
+                    if msg_id:
+                        processed_message_ids.add(msg_id)
+
+                    event_type = msg.get("event_type")
+
+                    # Assistant 메시지 수집
+                    if event_type == "assistant_message":
+                        content = msg.get("content", [])
+                        for item in content:
+                            if item.get("type") == "text":
+                                text = item.get("text", "")
+                                if text:
+                                    result_text += text
+
+                    # 상태 업데이트 확인
+                    elif event_type == "status_update":
+                        agent_status = str(msg.get("agent_status", "")).lower()
+                        logger.debug(f"   상태: {agent_status}")
+
+                        if agent_status in terminal_statuses:
+                            logger.info(f"✅ Manus Task 완료 - 응답 길이: {len(result_text)}자")
+                            return result_text if result_text else "작업이 완료되었습니다."
+
+                        elif agent_status == "error":
+                            error_content = msg.get("content", [])
+                            error_msg = "Unknown error"
+                            for item in error_content:
+                                if item.get("type") == "text":
+                                    error_msg = item.get("text", error_msg)
+                            logger.error(f"❌ Manus Task 에러: {error_msg}")
+                            raise Exception(f"Task error: {error_msg}")
+
+                    # 에러 메시지
+                    elif event_type == "error_message":
+                        content = msg.get("content", [])
+                        error_msg = "Unknown error"
+                        for item in content:
+                            if item.get("type") == "text":
+                                error_msg = item.get("text", error_msg)
+                        logger.error(f"❌ Manus Task 실패: {error_msg}")
+                        raise Exception(f"Task failed: {error_msg}")
+
+            # 타임아웃
+            logger.error(f"⏱️ Manus Task 타임아웃 - ID: {task_id}")
+            if result_text:
+                logger.info(f"   부분 결과 반환: {len(result_text)}자")
+                return result_text
+            raise Exception(f"Task timeout after 3 minutes")
+
+        except httpx.HTTPStatusError as e:
+            error_text = e.response.text
+            logger.error(f"❌ Manus API 에러 - {e.response.status_code}: {error_text[:500]}")
+            raise HTTPException(status_code=500, detail=f"Manus API error: {e.response.status_code}")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Manus API 예외 발생: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -321,6 +491,7 @@ async def chat(request: ChatRequest):
         "claude": call_claude,
         "codex": call_openai,
         "local": call_ollama,
+        "manus": call_manus,
     }
 
     handler = handlers.get(request.provider)
@@ -329,7 +500,8 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail=f"지원하지 않는 provider: {request.provider}")
 
     try:
-        text = await handler(**request.config, messages=request.messages)
+        normalized_config = normalize_chat_config(request.provider, request.config)
+        text = await handler(**normalized_config, messages=request.messages)
         logger.info(f"✅ 채팅 응답 성공 - 응답 길이: {len(text)}자")
         return {"text": text}
     except HTTPException:
@@ -382,6 +554,25 @@ async def connection_test(request: ConnectionTestRequest):
                 response = await client.get(url)
                 response.raise_for_status()
 
+        elif request.provider == "manus":
+            logger.info("  → Manus API 테스트 중...")
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Manus는 task.list로 간단하게 연결 테스트
+                response = await client.get(
+                    "https://api.manus.ai/v2/task.list",
+                    headers={
+                        "x-manus-api-key": request.config.get('apiKey', ''),
+                    },
+                    params={
+                        "limit": 1,  # 최소한의 데이터만 요청
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+                if not data.get("ok"):
+                    error = data.get("error", {})
+                    raise ValueError(f"Invalid response: {error.get('message', 'Unknown error')}")
+
         elif request.provider == "cursor":
             logger.warning("  → Cursor API 테스트 - 미지원")
             raise ValueError("Cursor 공개 API 미지원")
@@ -419,9 +610,258 @@ async def get_agents_list():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================================================
+# OpenAI 호환 API 엔드포인트 (Claude CLI Proxy)
+# ============================================================================
+
+
+@app.get("/v1/models")
+async def openai_models():
+    """OpenAI 호환 - 사용 가능한 모델 목록"""
+    logger.info("📋 OpenAI 모델 목록 요청")
+    model_ids = [
+        "claude-opus-4",
+        "claude-opus-4-6",
+        "claude-sonnet-4",
+        "claude-sonnet-4-5",
+        "claude-sonnet-4-6",
+        "claude-haiku-4",
+        "claude-haiku-4-5",
+    ]
+    now = int(datetime.now().timestamp())
+    return {
+        "object": "list",
+        "data": [
+            {"id": model_id, "object": "model", "owned_by": "anthropic", "created": now}
+            for model_id in model_ids
+        ],
+    }
+
+
+@app.post("/v1/chat/completions")
+async def openai_chat_completions(request: OpenAIChatRequest):
+    """OpenAI 호환 - 채팅 완성 (스트리밍/논스트리밍)"""
+    request_id = str(uuid.uuid4()).replace("-", "")[:24]
+    logger.info("=" * 80)
+    logger.info(f"💬 [요청 시작] Request ID: {request_id}")
+    logger.info(f"   모델: {request.model}")
+    logger.info(f"   스트리밍: {request.stream}")
+    logger.info(f"   메시지 수: {len(request.messages)}")
+    if request.messages:
+        logger.info(f"   첫 메시지 역할: {request.messages[0].role}")
+        first_content = str(request.messages[0].content)[:100]
+        logger.info(f"   첫 메시지 내용: {first_content}...")
+
+    # 요청 검증
+    if not request.messages or len(request.messages) == 0:
+        logger.error("❌ [요청 검증 실패] 메시지가 비어있음")
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": "messages is required and must be a non-empty array",
+                    "type": "invalid_request_error",
+                    "code": "invalid_messages",
+                }
+            },
+        )
+
+    # OpenAI → CLI 변환
+    logger.info(f"🔄 [변환 시작] OpenAI 형식 → Claude CLI 형식")
+    cli_input = openai_to_cli(request.dict())
+    logger.info(f"   CLI 모델: {cli_input['model']}")
+    logger.info(f"   프롬프트 길이: {len(cli_input['prompt'])}자")
+    logger.debug(f"   프롬프트 미리보기: {cli_input['prompt'][:200]}...")
+
+    if request.stream:
+        # 스트리밍 응답
+        logger.info(f"📡 [스트리밍 모드] 응답 시작")
+        return StreamingResponse(
+            stream_chat_response(cli_input, request_id),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Request-Id": request_id,
+            },
+        )
+    else:
+        # 논스트리밍 응답
+        logger.info(f"📦 [논스트리밍 모드] 응답 대기 중")
+        return await non_streaming_chat_response(cli_input, request_id)
+
+
+async def stream_chat_response(cli_input: Dict[str, Any], request_id: str):
+    """스트리밍 채팅 응답 생성기"""
+    import json
+    import asyncio
+
+    logger.info(f"🚀 [스트리밍 시작] Request ID: {request_id}")
+    subprocess = ClaudeSubprocess()
+    is_first = [True]  # list를 사용하여 클로저 문제 해결
+    last_model = ["claude-sonnet-4"]
+    result_data = [None]
+    chunks_queue = asyncio.Queue()
+    chunk_count = [0]
+
+    # SSE 연결 확인 코멘트
+    yield ":ok\n\n"
+
+    try:
+
+        def handle_content_delta(text: str):
+            chunk_count[0] += 1
+            if chunk_count[0] % 10 == 1:  # 10개마다 로깅
+                logger.debug(f"📨 [청크 #{chunk_count[0]}] 텍스트 수신: {len(text)}자")
+            chunk = create_streaming_chunk(
+                request_id, last_model[0], content=text, is_first=is_first[0]
+            )
+            is_first[0] = False
+            asyncio.create_task(
+                chunks_queue.put(f"data: {json.dumps(chunk)}\n\n")
+            )
+
+        def handle_result(result: Dict[str, Any]):
+            result_data[0] = result
+            usage = result.get("usage", {})
+            logger.info(f"✅ [최종 결과 수신]")
+            logger.info(f"   모델: {result.get('message', {}).get('model', 'unknown')}")
+            logger.info(f"   입력 토큰: {usage.get('input_tokens', 0)}")
+            logger.info(f"   출력 토큰: {usage.get('output_tokens', 0)}")
+            logger.info(f"   총 청크 수: {chunk_count[0]}")
+            if result.get("message"):
+                last_model[0] = result["message"].get("model", last_model[0])
+            asyncio.create_task(chunks_queue.put("DONE"))
+
+        def handle_error(error: Exception):
+            logger.error(f"❌ [Claude CLI 오류] {error}")
+            error_chunk = {
+                "error": {
+                    "message": str(error),
+                    "type": "server_error",
+                    "code": None,
+                }
+            }
+            asyncio.create_task(
+                chunks_queue.put(f"data: {json.dumps(error_chunk)}\n\n")
+            )
+            asyncio.create_task(chunks_queue.put("DONE"))
+
+        # Claude CLI 실행 (백그라운드)
+        logger.info(f"⚙️ [Claude CLI 실행] 모델: {cli_input['model']}")
+        asyncio.create_task(
+            subprocess.start(
+                prompt=cli_input["prompt"],
+                model=cli_input["model"],
+                session_id=cli_input.get("session_id"),
+                on_content_delta=handle_content_delta,
+                on_result=handle_result,
+                on_error=handle_error,
+            )
+        )
+
+        # 큐에서 청크 읽어서 yield
+        logger.debug(f"📬 [큐 대기] 스트림 청크 수신 대기 중...")
+        while True:
+            chunk = await chunks_queue.get()
+            if chunk == "DONE":
+                logger.info(f"🏁 [스트리밍 완료] Request ID: {request_id}")
+                break
+            yield chunk
+
+        # 최종 done 청크
+        if result_data[0]:
+            usage = result_data[0].get("usage")
+            done_chunk = create_done_chunk(request_id, last_model[0], usage)
+            yield f"data: {json.dumps(done_chunk)}\n\n"
+
+        yield "data: [DONE]\n\n"
+
+    except Exception as e:
+        logger.error(f"❌ [스트리밍 에러] {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        error_chunk = {
+            "error": {"message": str(e), "type": "server_error", "code": None}
+        }
+        yield f"data: {json.dumps(error_chunk)}\n\n"
+        yield "data: [DONE]\n\n"
+    finally:
+        logger.info(f"🛑 [Claude CLI 종료] Request ID: {request_id}")
+        subprocess.kill()
+
+
+async def non_streaming_chat_response(
+    cli_input: Dict[str, Any], request_id: str
+) -> Dict[str, Any]:
+    """논스트리밍 채팅 응답"""
+    logger.info(f"🚀 [논스트리밍 시작] Request ID: {request_id}")
+    subprocess = ClaudeSubprocess()
+    result_data = None
+
+    async def handle_result(result: Dict[str, Any]):
+        nonlocal result_data
+        result_data = result
+        usage = result.get("usage", {})
+        logger.info(f"✅ [최종 결과 수신]")
+        logger.info(f"   모델: {result.get('message', {}).get('model', 'unknown')}")
+        logger.info(f"   입력 토큰: {usage.get('input_tokens', 0)}")
+        logger.info(f"   출력 토큰: {usage.get('output_tokens', 0)}")
+
+    async def handle_error(error: Exception):
+        logger.error(f"❌ [Claude CLI 오류] {error}")
+        raise HTTPException(status_code=500, detail=str(error))
+
+    try:
+        # Claude CLI 실행
+        logger.info(f"⚙️ [Claude CLI 실행] 모델: {cli_input['model']}")
+        await subprocess.start(
+            prompt=cli_input["prompt"],
+            model=cli_input["model"],
+            session_id=cli_input.get("session_id"),
+            on_result=handle_result,
+            on_error=handle_error,
+        )
+
+        if result_data:
+            logger.info(f"🔄 [응답 변환] CLI 형식 → OpenAI 형식")
+            openai_response = cli_result_to_openai(result_data, request_id)
+            logger.info(f"🏁 [논스트리밍 완료] Request ID: {request_id}")
+            return openai_response
+        else:
+            logger.error(f"❌ [응답 없음] Claude CLI가 응답 없이 종료됨")
+            raise HTTPException(
+                status_code=500, detail="Claude CLI exited without response"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ [논스트리밍 에러] {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        logger.info(f"🛑 [Claude CLI 종료] Request ID: {request_id}")
+        subprocess.kill()
+
+
+@app.get("/health")
+async def health_check_openai():
+    """OpenAI 호환 - 헬스 체크"""
+    logger.info("💚 Health check (OpenAI 호환)")
+    claude_status = await verify_claude()
+    return {
+        "status": "ok" if claude_status["ok"] else "error",
+        "provider": "claude-code-cli",
+        "timestamp": datetime.now().isoformat(),
+        "claude_cli": claude_status,
+    }
+
+
 def main() -> None:
     """서버 시작"""
-    port = int(os.environ.get("PORT", 3001))
+    port = int(os.environ.get("PORT", 3003))
     logger.info("=" * 60)
     logger.info("🚀 Claude Agent Platform API Server 시작")
     logger.info(f"📡 서버 주소: http://localhost:{port}")

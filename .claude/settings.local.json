@@ -20,7 +20,15 @@
       "Bash(curl -s -w \"HTTP %{http_code}\\\\n\" -o /tmp/main.txt http://localhost:5173/src/main.jsx)",
       "Bash(curl -s -w \"HTTP %{http_code}\\\\n\" -o /tmp/app.txt http://localhost:5173/src/App.jsx)",
       "Bash(curl -s -w \"HTTP %{http_code}\\\\n\" -o /tmp/css.txt http://localhost:5173/src/styles.css)",
-      "Bash(npm start *)"
+      "Bash(npm start *)",
+      "Bash(python:*)",
+      "Bash(.venv/Scripts/python.exe:*)",
+      "Bash(curl:*)",
+      "Bash(.venvScriptspython.exe -m uvicorn src.main:app --host 0.0.0.0 --port 3003 --reload)",
+      "Bash(timeout:*)",
+      "Bash(done)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }
