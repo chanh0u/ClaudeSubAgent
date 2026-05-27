@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional, Union
 
 import httpx
 import uvicorn
+import yaml
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse, Response
@@ -467,9 +468,47 @@ async def call_ollama(endpoint: str, model: str, messages: List[Message]) -> str
             raise HTTPException(status_code=502, detail="Ollama 처리 중 오류가 발생했습니다.")
 
 
-def parse_agent_file(content: str, filename: str) -> AgentProfile:
-    """Agent MD 파일 파싱"""
+def split_frontmatter(content: str) -> tuple[Optional[Dict[str, Any]], str]:
+    """파일 앞부분의 YAML frontmatter(---로 감싼 블록)를 분리한다.
+
+    Returns:
+        (파싱된 frontmatter dict 또는 None, frontmatter를 제외한 본문)
+    """
+    if not content.startswith("---"):
+        return None, content
+
     lines = content.split("\n")
+    # 첫 줄이 정확히 '---'(여백 허용)인 경우에만 frontmatter로 간주
+    if lines[0].strip() != "---":
+        return None, content
+
+    for idx in range(1, len(lines)):
+        if lines[idx].strip() == "---":
+            fm_text = "\n".join(lines[1:idx])
+            body = "\n".join(lines[idx + 1 :])
+            try:
+                parsed = yaml.safe_load(fm_text)
+            except yaml.YAMLError as exc:
+                logger.warning(f"⚠️ frontmatter YAML 파싱 실패: {exc}")
+                return None, content
+            if isinstance(parsed, dict):
+                return parsed, body
+            return None, body
+    # 닫는 '---'를 못 찾으면 frontmatter 없음으로 처리
+    return None, content
+
+
+def _as_str_list(value: Any) -> List[str]:
+    """frontmatter 값을 문자열 리스트로 정규화한다."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [str(value).strip()]
+
+
+def parse_agent_file(content: str, filename: str) -> AgentProfile:
+    """Agent MD 파일 파싱 (YAML frontmatter + 마크다운 본문 모두 지원)"""
     agent = AgentProfile(
         id=filename.replace(".md", ""),
         name="",
@@ -482,31 +521,54 @@ def parse_agent_file(content: str, filename: str) -> AgentProfile:
         defaultConditions="",
     )
 
-    current_section = ""
+    frontmatter, body = split_frontmatter(content)
 
-    for line in lines:
+    # 1) frontmatter 값 우선 적용
+    if frontmatter:
+        agent.id = str(frontmatter.get("name", agent.id)) or agent.id
+        agent.name = str(frontmatter.get("name", "")).strip()
+        agent.level = str(frontmatter.get("seniority", "")).strip()
+        skills = frontmatter.get("skills")
+        expertise: List[str] = []
+        if isinstance(skills, dict):
+            expertise = _as_str_list(skills.get("expertise"))
+        agent.techStack = expertise or _as_str_list(frontmatter.get("tools_allowed"))
+        agent.specialty = ", ".join(_as_str_list(frontmatter.get("domain_expertise")))
+        agent.defaultConditions = ", ".join(_as_str_list(frontmatter.get("available_for")))
+
+    # 2) 마크다운 본문에서 보충 (frontmatter에 없는 값만 채움)
+    current_section = ""
+    for line in body.split("\n"):
         trimmed = line.strip()
 
         if trimmed.startswith("# "):
-            agent.name = trimmed[2:]
+            heading = trimmed[2:].strip()
+            # "Role: Backend Developer" → 이름 후보
+            if not agent.name:
+                agent.name = heading.split(":", 1)[-1].strip() if ":" in heading else heading
         elif trimmed.startswith("## "):
-            current_section = trimmed[3:]
-        elif trimmed.startswith("- **이름**:"):
+            current_section = trimmed[3:].strip()
+        elif trimmed.startswith("- **이름**:") and not agent.name:
             agent.name = trimmed.split(":", 1)[1].strip()
-        elif trimmed.startswith("- **전문분야**:"):
+        elif trimmed.startswith("- **전문분야**:") and not agent.specialty:
             agent.specialty = trimmed.split(":", 1)[1].strip()
-        elif trimmed.startswith("- **경력**:"):
+        elif trimmed.startswith("- **경력**:") and not agent.experience:
             agent.experience = trimmed.split(":", 1)[1].strip()
-        elif trimmed.startswith("- **레벨**:"):
+        elif trimmed.startswith("- **레벨**:") and not agent.level:
             agent.level = trimmed.split(":", 1)[1].strip()
-        elif current_section == "기술 스택" and trimmed.startswith("- "):
-            agent.techStack.append(trimmed[2:])
-        elif current_section == "역할" and trimmed and not trimmed.startswith("#"):
+        elif current_section in ("기술 스택", "Skills") and trimmed.startswith("- ") and not agent.techStack:
+            pass  # frontmatter expertise를 우선하므로 본문 기술스택은 보충하지 않음
+        elif current_section in ("역할", "목표", "🎯 목표") and trimmed and not trimmed.startswith(("#", "-", "`")):
             agent.role += (" " if agent.role else "") + trimmed
-        elif current_section == "적합한 프로젝트" and trimmed.startswith("- "):
+        elif current_section in ("적합한 프로젝트",) and trimmed.startswith("- "):
             agent.suitableProjects += (", " if agent.suitableProjects else "") + trimmed[2:]
         elif current_section == "기본 선택 조건" and trimmed.startswith("- "):
-            agent.defaultConditions += (", " if agent.defaultConditions else "") + trimmed[2:]
+            agent.defaultConditions += (
+                (", " if agent.defaultConditions else "") + trimmed[2:]
+            )
+
+    if not agent.name:
+        agent.name = agent.id
 
     return agent
 
@@ -548,8 +610,14 @@ def get_workspace_path() -> pathlib.Path:
 
 
 def get_project_path(project_id: str) -> pathlib.Path:
-    """특정 프로젝트 디렉토리 경로 반환"""
-    return get_workspace_path() / project_id
+    """특정 프로젝트 디렉토리 경로 반환 (path traversal 방지)"""
+    workspace = get_workspace_path()
+    candidate = (workspace / project_id).resolve()
+    try:
+        candidate.relative_to(workspace.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="잘못된 프로젝트 ID입니다.")
+    return candidate
 
 
 def get_file_tree(directory: pathlib.Path, prefix: str = "") -> List[Dict[str, Any]]:
@@ -748,7 +816,7 @@ async def get_agents_list():
         return {"agents": agents}
     except Exception as e:
         logger.error(f"❌ Agent 목록 조회 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Agent 목록 조회에 실패했습니다.")
 
 
 # ============================================================================
@@ -1065,6 +1133,24 @@ Generate the complete Python code now:"""
     prompt = prompts.get(file_type, f"Generate {file_type} code")
 
     try:
+        claude_status = await verify_claude()
+        if not claude_status.get("ok"):
+            logger.warning(f"⚠️ Claude CLI 미설치/비정상: {claude_status.get('error')}")
+            anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+            if anthropic_api_key:
+                logger.info("🔁 Claude API로 코드 생성 폴백 실행")
+                code = await call_claude(
+                    anthropic_api_key,
+                    model,
+                    [Message(role="user", text=prompt)],
+                )
+                return code.strip()
+            return (
+                "<!-- Error: Claude CLI not found. "
+                "Install with: npm install -g @anthropic-ai/claude-code "
+                "or set ANTHROPIC_API_KEY for API fallback. -->"
+            )
+
         logger.info(f"🤖 Claude CLI로 {file_type} 코드 생성 중...")
         subprocess_client = ClaudeSubprocess()
         result_data = None
@@ -1165,7 +1251,10 @@ async def create_project(request: ProjectCreateRequest):
             logger.info("✅ Frontend HTML 생성 완료")
         else:
             logger.error("❌ Frontend HTML 생성 실패")
-            raise HTTPException(status_code=500, detail="Frontend 코드 생성 실패")
+            raise HTTPException(
+                status_code=503,
+                detail=f"Frontend 코드 생성 실패: {html_code}",
+            )
 
     if request.project_type in ["api", "fullstack"]:
         logger.info("⚙️ Claude CLI로 Backend 코드 생성 중...")
@@ -1186,7 +1275,10 @@ async def create_project(request: ProjectCreateRequest):
             logger.info("✅ Backend 코드 생성 완료")
         else:
             logger.error("❌ Backend 코드 생성 실패")
-            raise HTTPException(status_code=500, detail="Backend 코드 생성 실패")
+            raise HTTPException(
+                status_code=503,
+                detail=f"Backend 코드 생성 실패: {python_code}",
+            )
 
     logger.info(f"✅ 프로젝트 생성 완료 - ID: {project_id}")
     return {
@@ -1253,9 +1345,9 @@ async def update_project_file(project_id: str, path: str, request: FileUpdateReq
         file_path.write_text(request.content, encoding="utf-8")
         logger.info(f"✅ 파일 수정 완료 - {path}")
         return {"message": "파일이 수정되었습니다.", "path": path}
-    except Exception as e:
+    except OSError as e:
         logger.error(f"❌ 파일 수정 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"파일 수정 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail="파일 수정에 실패했습니다.")
 
 
 @app.post("/api/project/{project_id}/feedback")
@@ -1357,9 +1449,11 @@ Generate the complete modified code now:"""
             modified_files.append(request.file_path)
             logger.info(f"✅ 파일 수정 완료: {request.file_path}")
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"❌ 파일 수정 실패: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"파일 수정 실패: {str(e)}")
+            raise HTTPException(status_code=500, detail="피드백 반영에 실패했습니다.")
 
     return {
         "message": "피드백이 반영되었습니다.",
@@ -1387,7 +1481,7 @@ async def download_project(project_id: str):
         )
     except Exception as e:
         logger.error(f"❌ ZIP 생성 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"ZIP 생성 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail="ZIP 생성에 실패했습니다.")
 
 
 @app.post("/api/project/{project_id}/start")
@@ -1420,11 +1514,13 @@ async def start_project(project_id: str, background_tasks: BackgroundTasks):
         else:
             serve_dir = project_path
 
+        # stdout/stderr는 DEVNULL로 보낸다. PIPE를 읽지 않으면 버퍼가 차서
+        # http.server가 블로킹될 수 있다.
         process = subprocess.Popen(
             ["python", "-m", "http.server", str(port)],
             cwd=serve_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
 
         url = f"http://localhost:{port}"
@@ -1443,7 +1539,7 @@ async def start_project(project_id: str, background_tasks: BackgroundTasks):
         }
     except Exception as e:
         logger.error(f"❌ 프로젝트 실행 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"프로젝트 실행 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail="프로젝트 실행에 실패했습니다.")
 
 
 @app.post("/api/project/{project_id}/stop")
@@ -1463,7 +1559,7 @@ async def stop_project(project_id: str):
         return {"message": "프로젝트가 중지되었습니다."}
     except Exception as e:
         logger.error(f"❌ 프로젝트 중지 실패: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"프로젝트 중지 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail="프로젝트 중지에 실패했습니다.")
 
 
 @app.get("/api/projects")
@@ -1488,6 +1584,23 @@ async def list_projects():
     return {"projects": projects}
 
 
+@app.on_event("shutdown")
+async def shutdown_cleanup() -> None:
+    """서버 종료 시 실행 중인 프로젝트 프로세스를 정리한다 (좀비 프로세스 방지)."""
+    for project_id, info in list(running_projects.items()):
+        process = info.get("process")
+        if not process:
+            continue
+        try:
+            process.terminate()
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        except Exception as e:
+            logger.warning(f"⚠️ 프로젝트 정리 실패 - {project_id}: {e}")
+    running_projects.clear()
+
+
 def main() -> None:
     """서버 시작"""
     port = int(os.environ.get("PORT", 3003))
@@ -1499,7 +1612,7 @@ def main() -> None:
     logger.info("=" * 60)
 
     uvicorn.run(
-        "main:app",
+        "src.main:app",
         host="0.0.0.0",
         port=port,
         reload=True,

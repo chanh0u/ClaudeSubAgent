@@ -852,7 +852,16 @@ function App() {
               <div
                 key={option.id}
                 className={`projectTypeCard ${projectType === option.id ? "active" : ""}`}
+                role="radio"
+                aria-checked={projectType === option.id}
+                tabIndex={0}
                 onClick={() => setProjectType(option.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setProjectType(option.id);
+                  }
+                }}
               >
                 <div className="projectTypeLabel">{option.label}</div>
                 <div className="projectTypeDesc">{option.desc}</div>
@@ -902,7 +911,17 @@ function App() {
                 className={`agentCard ${selected ? "selected" : ""} ${
                   recommended ? "recommended" : ""
                 }`}
+                role="checkbox"
+                aria-checked={selected}
+                aria-label={`${agent.name} ${recommended ? "(추천)" : ""}`}
+                tabIndex={0}
                 onClick={() => toggleAgent(agent.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    toggleAgent(agent.id);
+                  }
+                }}
               >
                 <div className="agentCheckbox" />
                 <div className="agentHeader">
@@ -914,10 +933,10 @@ function App() {
                 </div>
                 <p className="agentSpecialty">{agent.specialty}</p>
                 <p className="agentRole">{agent.role}</p>
-                {agent.techStack.length > 0 && (
+                {agent.techStack?.length > 0 && (
                   <div className="agentTechStack">
-                    {agent.techStack.slice(0, 3).map((tech, idx) => (
-                      <span key={idx} className="techBadge">
+                    {agent.techStack.slice(0, 3).map((tech) => (
+                      <span key={tech} className="techBadge">
                         {tech}
                       </span>
                     ))}
@@ -1301,6 +1320,13 @@ function App() {
             </button>
           </div>
         </section>
+      )}
+
+      {toast && (
+        <div className={`toast ${toast.type}`} role="status" aria-live="polite">
+          <span>{toast.type === "error" ? "⚠️" : "✅"}</span>
+          <span>{toast.message}</span>
+        </div>
       )}
     </div>
   );

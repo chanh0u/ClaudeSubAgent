@@ -9,10 +9,21 @@ import inspect
 import json
 import logging
 import os
+import shutil
 import subprocess
+import sys
 from typing import Optional, Callable, Dict, Any
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_claude_cmd(claude_bin: str) -> list:
+    """Windows .cmd/.bat 파일을 subprocess로 실행하기 위해 cmd /c 래핑."""
+    if sys.platform == "win32":
+        resolved = shutil.which(claude_bin)
+        if resolved and resolved.lower().endswith((".cmd", ".bat")):
+            return ["cmd", "/c", resolved]
+    return [claude_bin]
 
 
 async def _call_callback(callback: Optional[Callable], *args, **kwargs):
@@ -99,10 +110,11 @@ class ClaudeSubprocess:
         logger.debug(f"   프롬프트 길이: {len(prompt)}자")
 
         try:
-            # subprocess 시작
-            logger.info(f"⚙️ [subprocess] Popen 실행 중...")
+            # subprocess 시작 (Windows .cmd 파일 처리 포함)
+            cmd = _resolve_claude_cmd(claude_bin) + args
+            logger.info(f"⚙️ [subprocess] Popen 실행 중... 명령: {cmd[0]}")
             self.process = subprocess.Popen(
-                [claude_bin] + args,
+                cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -311,23 +323,26 @@ class ClaudeSubprocess:
 async def verify_claude() -> dict:
     """Claude CLI 설치 확인"""
     claude_bin = os.environ.get("CLAUDE_BIN", "claude")
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            claude_bin,
-            "--version",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        if proc.returncode == 0:
-            return {"ok": True, "version": stdout.decode().strip()}
-        else:
+
+    def _sync_verify() -> dict:
+        try:
+            cmd = _resolve_claude_cmd(claude_bin) + ["--version"]
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                return {"ok": True, "version": result.stdout.strip()}
+            return {"ok": False, "error": "Claude CLI returned non-zero exit code"}
+        except FileNotFoundError:
             return {
                 "ok": False,
-                "error": "Claude CLI returned non-zero exit code",
+                "error": "Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code",
             }
-    except FileNotFoundError:
-        return {
-            "ok": False,
-            "error": "Claude CLI not found. Install with: npm install -g @anthropic-ai/claude-code",
-        }
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "Claude CLI version check timed out"}
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _sync_verify)

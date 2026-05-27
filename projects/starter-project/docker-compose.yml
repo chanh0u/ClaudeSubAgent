@@ -1,0 +1,61 @@
+# Production-oriented stack: backend (FastAPI) + proxy (Node) + frontend (nginx)
+# Usage:
+#   cp .env.example .env   # fill in your keys
+#   docker compose up --build
+#
+# For local development with hot reload, use docker-compose.dev.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+services:
+  backend:
+    build:
+      context: ./python
+      dockerfile: Dockerfile
+    image: starter-backend:latest
+    ports:
+      - "3003:3003"
+    environment:
+      - PORT=3003
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5173}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://localhost:11434}
+      - MANUS_API_KEY=${MANUS_API_KEY:-}
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  proxy:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    image: starter-proxy:latest
+    # Host port 3456 -> container port 3001 (server.js default)
+    ports:
+      - "3456:3001"
+    environment:
+      - PORT=3001
+      - DEBUG=${DEBUG:-}
+    # server.js reads agent definitions from ../.claude/agents at runtime.
+    volumes:
+      - ./.claude/agents:/.claude/agents:ro
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  frontend:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    image: starter-frontend:latest
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge

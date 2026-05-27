@@ -1724,3 +1724,109 @@ button.ghost:hover:not(:disabled) {
   color: var(--text-primary);
   box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
 }
+
+/* ============================================================================
+   Toast Notifications
+   ============================================================================ */
+
+.toast {
+  position: fixed;
+  bottom: var(--spacing-xl);
+  right: var(--spacing-xl);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-radius: var(--radius-md);
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border-color);
+  max-width: 380px;
+  animation: toastIn 0.3s ease-out;
+}
+
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.toast.success {
+  background: rgba(16, 185, 129, 0.95);
+  border-color: var(--success);
+}
+
+.toast.error {
+  background: rgba(239, 68, 68, 0.95);
+  border-color: var(--error);
+}
+
+@media (max-width: 768px) {
+  .toast {
+    left: var(--spacing-md);
+    right: var(--spacing-md);
+    bottom: var(--spacing-md);
+    max-width: none;
+  }
+}
+
+/* ============================================================================
+   Chat Typing Indicator
+   ============================================================================ */
+
+.typingIndicator {
+  font-style: italic;
+  opacity: 0.7;
+  animation: blink 1.5s ease-in-out infinite;
+}
+
+/* ============================================================================
+   File Tree
+   ============================================================================ */
+
+.fileTreeDir {
+  color: var(--warning);
+  display: inline-block;
+  padding: 2px 0;
+}
+
+.fileTreeFile {
+  cursor: pointer;
+  color: #a5b4fc;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: var(--transition-fast);
+}
+
+.fileTreeFile:hover {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--text-primary);
+}
+
+.fileTreeFile.active {
+  color: var(--accent-primary);
+  background: rgba(99, 102, 241, 0.15);
+}
+
+.fileTreeFile:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 1px;
+}
+
+/* Keyboard focus visibility for interactive cards */
+.projectTypeCard:focus-visible,
+.agentCard:focus-visible,
+.featureCheckbox:focus-within {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}

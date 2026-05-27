@@ -3,6 +3,11 @@
 .claude/webhook_config.json
 .examples
 
+# environment files (never commit real keys)
+.env
+**/.env
+!**/.env.example
+
 **/node_modules/
 
 **/.venv/
