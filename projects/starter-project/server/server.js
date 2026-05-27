@@ -176,7 +176,7 @@ async function callOllama({ endpoint, model, messages }) {
     return result;
   } catch (err) {
     if (err.name === "AbortError") {
-      const msg = `Ollama 연결 타임아웃: ${url} (30초 초과)`;
+      const msg = `Ollama 연결 타임아웃: ${url} (120초 초과)`;
       console.error(`❌ ${msg}`);
       throw new Error(msg);
     }
@@ -251,7 +251,7 @@ app.post("/api/connection-test", async (req, res) => {
       } catch (err) {
         clearTimeout(timeout);
         if (err.name === "AbortError") {
-          throw new Error(`연결 타임아웃 (10초 초과) - ${url}`);
+          throw new Error(`연결 타임아웃 (30초 초과) - ${url}`);
         }
         throw new Error(`연결 실패: ${err.message}`);
       }

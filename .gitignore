@@ -1,2 +1,12 @@
 # local secrets
 .claude/settings.local.json
+.claude/webhook_config.json
+.examples
+
+**/node_modules/
+
+**/.venv/
+
+.claude/
+.codex/
+.venv/

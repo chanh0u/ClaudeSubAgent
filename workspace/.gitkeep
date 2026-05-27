@@ -1,0 +1,19 @@
+# 생성된 프로젝트 작업 공간
+
+이 디렉토리에는 Agent 회사가 생성한 프로젝트 코드가 저장됩니다.
+
+구조:
+```
+workspace/
+└── {project_id}/
+    ├── src/
+    ├── tests/
+    ├── migrations/
+    ├── docs/
+    ├── Dockerfile
+    ├── docker-compose.yml
+    └── README.md
+```
+
+**주의**: 이 디렉토리는 .gitignore에 포함되어 있습니다.
+생성된 프로젝트는 별도 Git 레포지토리로 관리하세요.

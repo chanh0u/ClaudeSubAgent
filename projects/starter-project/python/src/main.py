@@ -24,6 +24,8 @@ from .adapters.cli_to_openai import (
     create_streaming_chunk,
     create_done_chunk,
 )
+from .core.http_errors import api_error
+from .core.path_safety import ensure_within_workspace
 
 # 로깅 설정
 log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -85,12 +87,27 @@ class ChatRequest(BaseModel):
     @field_validator("provider")
     @classmethod
     def validate_provider(cls, v: str) -> str:
-        return v.strip().lower()
+        provider = v.strip().lower()
+        if provider == "cursor":
+            return provider
+        if provider not in SUPPORTED_PROVIDERS:
+            raise ValueError(f"지원하지 않는 provider: {provider}")
+        return provider
 
 
 class ConnectionTestRequest(BaseModel):
     provider: str
     config: Dict[str, Any]
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, v: str) -> str:
+        provider = v.strip().lower()
+        if provider == "cursor":
+            return provider
+        if provider not in SUPPORTED_PROVIDERS:
+            raise ValueError(f"지원하지 않는 provider: {provider}")
+        return provider
 
 
 class AgentProfile(BaseModel):
@@ -609,7 +626,7 @@ async def chat(request: ChatRequest):
 
     if request.provider == "cursor":
         logger.warning("⚠️ Cursor provider 요청 - 미지원")
-        raise HTTPException(status_code=501, detail="Cursor는 공개 채팅 API가 없어 현재 미지원입니다.")
+        raise api_error(501, "PROVIDER_UNSUPPORTED", "Cursor는 공개 채팅 API가 없어 현재 미지원입니다.")
 
     handlers = {
         "claude": call_claude,
@@ -621,7 +638,7 @@ async def chat(request: ChatRequest):
     handler = handlers.get(request.provider)
     if not handler:
         logger.error(f"❌ 지원하지 않는 provider: {request.provider}")
-        raise HTTPException(status_code=400, detail=f"지원하지 않는 provider: {request.provider}")
+        raise api_error(400, "PROVIDER_INVALID", f"지원하지 않는 provider: {request.provider}")
 
     try:
         normalized_config = normalize_chat_config(request.provider, request.config)
@@ -634,7 +651,7 @@ async def chat(request: ChatRequest):
         logger.error(f"❌ 채팅 처리 중 예외 발생: {type(e).__name__}: {str(e)}")
         import traceback
         logger.error(f"스택 트레이스:\n{traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail="채팅 처리 중 내부 오류가 발생했습니다.")
+        raise api_error(500, "CHAT_INTERNAL_ERROR", "채팅 처리 중 내부 오류가 발생했습니다.", retryable=True)
 
 
 @app.post("/api/connection-test")
@@ -1197,13 +1214,7 @@ async def get_project_file(project_id: str, path: str):
     """특정 파일 내용 조회"""
     logger.info(f"📄 파일 조회 - {project_id}/{path}")
     workspace = get_workspace_path()
-    file_path = workspace / path
-
-    # 보안: workspace 외부 접근 방지
-    try:
-        file_path.resolve().relative_to(workspace.resolve())
-    except ValueError:
-        raise HTTPException(status_code=403, detail="접근 권한이 없습니다.")
+    file_path = ensure_within_workspace(workspace, path)
 
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
@@ -1233,13 +1244,7 @@ async def update_project_file(project_id: str, path: str, request: FileUpdateReq
     """파일 내용 수정"""
     logger.info(f"✏️ 파일 수정 - {project_id}/{path}")
     workspace = get_workspace_path()
-    file_path = workspace / path
-
-    # 보안: workspace 외부 접근 방지
-    try:
-        file_path.resolve().relative_to(workspace.resolve())
-    except ValueError:
-        raise HTTPException(status_code=403, detail="접근 권한이 없습니다.")
+    file_path = ensure_within_workspace(workspace, path)
 
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
@@ -1268,13 +1273,7 @@ async def submit_feedback(project_id: str, request: FeedbackRequest):
 
     # 특정 파일에 대한 피드백인 경우
     if request.file_path:
-        file_path = workspace / request.file_path
-
-        # 보안: workspace 외부 접근 방지
-        try:
-            file_path.resolve().relative_to(workspace.resolve())
-        except ValueError:
-            raise HTTPException(status_code=403, detail="접근 권한이 없습니다.")
+        file_path = ensure_within_workspace(workspace, request.file_path)
 
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
