@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
 
 const API_BASE = "http://localhost:3003";
 
@@ -108,6 +108,12 @@ function App() {
   ]);
   const [input, setInput] = useState("");
   const [requirements, setRequirements] = useState("");
+  const [isSendingChat, setIsSendingChat] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [isSavingFile, setIsSavingFile] = useState(false);
+  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
+  const [toast, setToast] = useState(null);
+  const chatBoxRef = useRef(null);
 
   const [projectType, setProjectType] = useState("fullstack");
   const [features, setFeatures] = useState([]);
@@ -148,109 +154,76 @@ function App() {
   const providerStatus = connStatus[providerId] || "미연결";
   const isConnected = providerStatus === "연결됨";
 
+  const showToast = useCallback((message, type = "success") => {
+    setToast({ message, type });
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 3000);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
+  // 새 메시지 추가 시 채팅창 자동 스크롤
+  useEffect(() => {
+    if (chatBoxRef.current) {
+      chatBoxRef.current.scrollTop = chatBoxRef.current.scrollHeight;
+    }
+  }, [messages]);
+
   // Agent 목록 가져오기
   useEffect(() => {
     const fetchAgents = async () => {
       try {
         const res = await fetch(`${API_BASE}/api/agents`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         setAgents(data.agents || []);
       } catch (e) {
         console.error("Failed to fetch agents:", e);
+        showToast(`Agent 목록을 불러오지 못했습니다: ${e.message}`, "error");
       }
     };
     fetchAgents();
-  }, []);
+  }, [showToast]);
 
   // 프로젝트 타입과 아키텍처 특성에 따라 추천 agent 자동 선택
   useEffect(() => {
     if (agents.length === 0) return;
 
+    const agentIds = new Set(agents.map((a) => a.id));
     const recommended = [];
+    const addIfExists = (id) => {
+      if (agentIds.has(id) && !recommended.includes(id)) {
+        recommended.push(id);
+      }
+    };
 
     // 1. 프로젝트 유형 기반 핵심 개발자 선택
-    switch (projectType) {
-      case "web":
-        // Web Application → Frontend 필수
-        const frontendWeb = agents.find(a => a.id === "frontend-developer");
-        const backendWeb = agents.find(a => a.id === "backend-developer");
-        if (frontendWeb) recommended.push(frontendWeb.id);
-        if (backendWeb) recommended.push(backendWeb.id);
-        break;
-
-      case "mobile":
-        // Mobile App → Frontend (모바일 개발도 Frontend 역할)
-        const frontendMobile = agents.find(a => a.id === "frontend-developer");
-        const backendMobile = agents.find(a => a.id === "backend-developer");
-        if (frontendMobile) recommended.push(frontendMobile.id);
-        if (backendMobile) recommended.push(backendMobile.id);
-        break;
-
-      case "api":
-        // API Server → Backend Only
-        const backendApi = agents.find(a => a.id === "backend-developer");
-        if (backendApi) recommended.push(backendApi.id);
-        break;
-
-      case "fullstack":
-        // Fullstack → Fullstack Developer
-        const fullstack = agents.find(a => a.id === "fullstack-developer");
-        if (fullstack) recommended.push(fullstack.id);
-        break;
-
-      case "desktop":
-        // Desktop App → Frontend (Electron)
-        const frontendDesktop = agents.find(a => a.id === "frontend-developer");
-        const backendDesktop = agents.find(a => a.id === "backend-developer");
-        if (frontendDesktop) recommended.push(frontendDesktop.id);
-        if (backendDesktop) recommended.push(backendDesktop.id);
-        break;
-
-      case "cli":
-      case "mcp":
-        // CLI/MCP → Backend (서버 사이드 로직)
-        const backendCli = agents.find(a => a.id === "backend-developer");
-        if (backendCli) recommended.push(backendCli.id);
-        break;
-    }
+    const coreByType = {
+      web: ["frontend-developer", "backend-developer"],
+      mobile: ["frontend-developer", "backend-developer"],
+      api: ["backend-developer"],
+      fullstack: ["fullstack-developer"],
+      desktop: ["frontend-developer", "backend-developer"],
+      cli: ["backend-developer"],
+      mcp: ["backend-developer"]
+    };
+    (coreByType[projectType] || []).forEach(addIfExists);
 
     // 2. 아키텍처 특성 기반 전문가 추가
-    if (features.includes("realtime")) {
-      // 실시간 통신 → Backend Developer (이미 추가되어 있을 수 있음)
-      const backend = agents.find(a => a.id === "backend-developer");
-      if (backend && !recommended.includes(backend.id)) {
-        recommended.push(backend.id);
-      }
-    }
-
-    if (features.includes("auth")) {
-      // 인증/권한 → Security Engineer
-      const security = agents.find(a => a.id === "security-engineer");
-      if (security) recommended.push(security.id);
-    }
-
-    if (features.includes("database")) {
-      // 데이터베이스 집약적 → Database Engineer
-      const db = agents.find(a => a.id === "database-engineer");
-      if (db) recommended.push(db.id);
-    }
-
-    if (features.includes("file") || features.includes("external") || features.includes("ai")) {
-      // 파일 처리, 외부 API, AI 기능 → Backend Developer (이미 추가되어 있을 수 있음)
-      const backend = agents.find(a => a.id === "backend-developer");
-      if (backend && !recommended.includes(backend.id)) {
-        recommended.push(backend.id);
-      }
+    if (features.includes("realtime")) addIfExists("backend-developer");
+    if (features.includes("auth")) addIfExists("security-engineer");
+    if (features.includes("database")) addIfExists("database-engineer");
+    if (features.some((f) => ["file", "external", "ai"].includes(f))) {
+      addIfExists("backend-developer");
     }
 
     // 3. 항상 추가되는 인력
-    const devops = agents.find(a => a.id === "devops-engineer");
-    const qa = agents.find(a => a.id === "qa-engineer");
-    if (devops) recommended.push(devops.id);
-    if (qa) recommended.push(qa.id);
+    addIfExists("devops-engineer");
+    addIfExists("qa-engineer");
 
-    // 중복 제거
-    setSelectedAgents([...new Set(recommended)]);
+    setSelectedAgents(recommended);
   }, [agents, projectType, features]);
 
   const summary = useMemo(() => {
@@ -331,6 +304,7 @@ function App() {
       setConnStatus((prev) => ({ ...prev, [providerId]: "필드 누락" }));
       return;
     }
+    setIsTesting(true);
     setConnStatus((prev) => ({ ...prev, [providerId]: "확인 중..." }));
     try {
       const r = await fetch(`${API_BASE}/api/connection-test`, {
@@ -348,11 +322,13 @@ function App() {
         ...prev,
         [providerId]: `실패: ${e.message}`
       }));
+    } finally {
+      setIsTesting(false);
     }
   };
 
   const sendChat = async () => {
-    if (!input.trim()) return;
+    if (!input.trim() || isSendingChat) return;
     const userMsg = input.trim();
     const nextMessages = [...messages, { role: "user", text: userMsg }];
     setMessages(nextMessages);
@@ -361,6 +337,7 @@ function App() {
     setStatus("draft");
     setReviewed(false);
     setApproved(false);
+    setIsSendingChat(true);
 
     try {
       const r = await fetch(`${API_BASE}/api/chat`, {
@@ -380,6 +357,8 @@ function App() {
         ...prev,
         { role: "assistant", text: `오류: ${e.message}` }
       ]);
+    } finally {
+      setIsSendingChat(false);
     }
   };
 
@@ -623,9 +602,10 @@ function App() {
     try {
       const res = await fetch(`${API_BASE}/api/project/${projId}/files`);
       const data = await res.json();
-      setFileTree(data.tree);
+      setFileTree(data.tree || []);
     } catch (e) {
       console.error("파일 트리 로드 실패:", e);
+      showToast(`파일 트리 로드 실패: ${e.message}`, "error");
     }
   };
 
@@ -647,23 +627,28 @@ function App() {
   };
 
   const saveFile = async () => {
-    if (!selectedFile) return;
+    if (!selectedFile || isSavingFile) return;
+    setIsSavingFile(true);
     try {
-      await fetch(`${API_BASE}/api/project/${projectId}/file?path=${encodeURIComponent(selectedFile)}`, {
+      const res = await fetch(`${API_BASE}/api/project/${projectId}/file?path=${encodeURIComponent(selectedFile)}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ content: fileContent })
       });
-      alert("파일이 저장되었습니다.");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      showToast("파일이 저장되었습니다.");
       setIsEditing(false);
     } catch (e) {
       console.error("파일 저장 실패:", e);
-      alert("파일 저장 실패: " + e.message);
+      showToast("파일 저장 실패: " + e.message, "error");
+    } finally {
+      setIsSavingFile(false);
     }
   };
 
   const submitFeedback = async () => {
-    if (!feedback.trim()) return;
+    if (!feedback.trim() || isSubmittingFeedback) return;
+    setIsSubmittingFeedback(true);
     try {
       const res = await fetch(`${API_BASE}/api/project/${projectId}/feedback`, {
         method: "POST",
@@ -680,11 +665,11 @@ function App() {
       }
 
       const data = await res.json();
-      alert("피드백이 반영되었습니다.");
+      showToast("피드백이 반영되었습니다.");
       setFeedback("");
 
       // 수정된 파일 다시 로드
-      if (selectedFile && data.modified_files.includes(selectedFile)) {
+      if (selectedFile && data.modified_files?.includes(selectedFile)) {
         await loadFile(selectedFile);
       }
 
@@ -692,7 +677,9 @@ function App() {
       await loadFileTree(projectId);
     } catch (e) {
       console.error("피드백 제출 실패:", e);
-      alert("피드백 제출 실패: " + e.message);
+      showToast("피드백 제출 실패: " + e.message, "error");
+    } finally {
+      setIsSubmittingFeedback(false);
     }
   };
 
@@ -702,22 +689,25 @@ function App() {
   };
 
   const renderFileTree = (nodes, level = 0) => {
-    return nodes.map((node, idx) => (
-      <div key={idx} style={{ marginLeft: level * 16 }}>
+    return nodes.map((node) => (
+      <div key={node.path || node.name} style={{ marginLeft: level * 16 }}>
         {node.type === "directory" ? (
           <div>
-            <span style={{ cursor: "pointer", color: "#fbbf24" }}>
-              📁 {node.name}
-            </span>
+            <span className="fileTreeDir">📁 {node.name}</span>
             {node.children && renderFileTree(node.children, level + 1)}
           </div>
         ) : (
           <div
-            style={{
-              cursor: "pointer",
-              color: selectedFile === node.path ? "#6366f1" : "#a5b4fc"
-            }}
+            className={`fileTreeFile ${selectedFile === node.path ? "active" : ""}`}
+            role="button"
+            tabIndex={0}
             onClick={() => loadFile(node.path)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                loadFile(node.path);
+              }
+            }}
           >
             📄 {node.name}
           </div>
@@ -870,7 +860,9 @@ function App() {
             </div>
 
             <div className="actionRow">
-              <button onClick={testConnection}>연결 확인</button>
+              <button onClick={testConnection} disabled={isTesting}>
+                {isTesting ? "확인 중..." : "연결 확인"}
+              </button>
               <span className={`statusBadge ${isConnected ? "ok" : "warn"}`}>
                 상태: {providerStatus}
               </span>
@@ -885,22 +877,38 @@ function App() {
           현재 LLM: <strong>{currentProvider.label}</strong>
         </p>
 
-        <div className="chatBox">
+        <div className="chatBox" ref={chatBoxRef} aria-live="polite">
           {messages.map((m, idx) => (
             <div key={idx} className={`msg ${m.role}`}>
               <strong>{m.role === "assistant" ? "AI" : "USER"}</strong>
               <p>{m.text}</p>
             </div>
           ))}
+          {isSendingChat && (
+            <div className="msg assistant">
+              <strong>AI</strong>
+              <p className="typingIndicator">응답 생성 중...</p>
+            </div>
+          )}
         </div>
 
         <div className="inputRow">
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendChat();
+              }
+            }}
             placeholder="서비스 요구사항을 입력하세요"
+            aria-label="서비스 요구사항 입력"
+            disabled={isSendingChat}
           />
-          <button onClick={sendChat}>대화 반영</button>
+          <button onClick={sendChat} disabled={isSendingChat || !input.trim()}>
+            {isSendingChat ? "전송 중..." : "대화 반영"}
+          </button>
         </div>
       </section>
 

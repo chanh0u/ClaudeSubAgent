@@ -14,7 +14,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 # Claude CLI 통합
 from .claude_subprocess.claude_cli import ClaudeSubprocess, verify_claude
@@ -36,17 +36,42 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Claude Agent Platform API", version="1.0.0")
 
-# CORS 설정
+# CORS 설정 (환경변수 ALLOWED_ORIGINS로 오버라이드 가능, 콤마 구분)
+_default_origins = "http://localhost:5173"
+allowed_origins = [
+    origin.strip()
+    for origin in os.environ.get("ALLOWED_ORIGINS", _default_origins).split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
 
+def extract_http_error_message(exc: httpx.HTTPStatusError) -> str:
+    """HTTP 에러 응답에서 안전하게 메시지 추출 (JSON이 아니어도 예외 미발생)"""
+    try:
+        body = exc.response.json()
+        if isinstance(body, dict):
+            error = body.get("error")
+            if isinstance(error, dict):
+                return error.get("message", str(exc))
+            if isinstance(error, str):
+                return error
+        return str(exc)
+    except ValueError:
+        text = exc.response.text or ""
+        return text[:200] if text else str(exc)
+
+
 # Pydantic 모델
+SUPPORTED_PROVIDERS = {"claude", "codex", "local", "manus"}
+
+
 class Message(BaseModel):
     role: str
     text: str
@@ -55,7 +80,12 @@ class Message(BaseModel):
 class ChatRequest(BaseModel):
     provider: str
     config: Dict[str, Any]
-    messages: List[Message]
+    messages: List[Message] = Field(..., min_length=1)
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, v: str) -> str:
+        return v.strip().lower()
 
 
 class ConnectionTestRequest(BaseModel):
@@ -166,12 +196,12 @@ async def call_claude(api_key: str, model: str, messages: List[Message]) -> str:
             logger.info(f"✅ Claude API 응답 성공 - 응답 길이: {len(result)}자")
             return result
         except httpx.HTTPStatusError as e:
-            error_msg = e.response.json().get("error", {}).get("message", str(e))
+            error_msg = extract_http_error_message(e)
             logger.error(f"❌ Claude API 에러 - {e.response.status_code}: {error_msg}")
-            raise HTTPException(status_code=500, detail=error_msg)
-        except Exception as e:
-            logger.error(f"❌ Claude API 예외 발생: {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=502, detail=f"Claude API 오류: {error_msg}")
+        except httpx.RequestError as e:
+            logger.error(f"❌ Claude API 연결 오류: {type(e).__name__}: {e}")
+            raise HTTPException(status_code=502, detail="Claude API 연결에 실패했습니다.")
 
 
 async def call_openai(api_key: str, model: str, messages: List[Message]) -> str:
@@ -198,12 +228,12 @@ async def call_openai(api_key: str, model: str, messages: List[Message]) -> str:
             logger.info(f"✅ OpenAI API 응답 성공 - 응답 길이: {len(result)}자")
             return result
         except httpx.HTTPStatusError as e:
-            error_msg = e.response.json().get("error", {}).get("message", str(e))
+            error_msg = extract_http_error_message(e)
             logger.error(f"❌ OpenAI API 에러 - {e.response.status_code}: {error_msg}")
-            raise HTTPException(status_code=500, detail=error_msg)
-        except Exception as e:
-            logger.error(f"❌ OpenAI API 예외 발생: {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=502, detail=f"OpenAI API 오류: {error_msg}")
+        except httpx.RequestError as e:
+            logger.error(f"❌ OpenAI API 연결 오류: {type(e).__name__}: {e}")
+            raise HTTPException(status_code=502, detail="OpenAI API 연결에 실패했습니다.")
 
 
 async def call_manus(api_key: str, model: str, messages: List[Message]) -> str:
@@ -324,12 +354,15 @@ async def call_manus(api_key: str, model: str, messages: List[Message]) -> str:
         except httpx.HTTPStatusError as e:
             error_text = e.response.text
             logger.error(f"❌ Manus API 에러 - {e.response.status_code}: {error_text[:500]}")
-            raise HTTPException(status_code=500, detail=f"Manus API error: {e.response.status_code}")
+            raise HTTPException(status_code=502, detail=f"Manus API error: {e.response.status_code}")
+        except httpx.RequestError as e:
+            logger.error(f"❌ Manus API 연결 오류: {type(e).__name__}: {e}")
+            raise HTTPException(status_code=502, detail="Manus API 연결에 실패했습니다.")
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"❌ Manus API 예외 발생: {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.error(f"❌ Manus API 처리 오류: {str(e)}")
+            raise HTTPException(status_code=502, detail=f"Manus 처리 오류: {str(e)}")
 
 
 async def call_ollama(endpoint: str, model: str, messages: List[Message]) -> str:
@@ -384,9 +417,9 @@ async def call_ollama(endpoint: str, model: str, messages: List[Message]) -> str
             try:
                 data = response.json()
                 logger.debug(f"📥 응답 JSON: {data}")
-            except Exception as json_err:
+            except ValueError as json_err:
                 logger.error(f"❌ JSON 파싱 실패: {json_err}, 원본: {response_text[:200]}")
-                raise HTTPException(status_code=500, detail=f"JSON 파싱 실패: {str(json_err)}")
+                raise HTTPException(status_code=502, detail="Ollama 응답을 파싱할 수 없습니다.")
 
             result = data.get("message", {}).get("content", "")
 
@@ -400,25 +433,21 @@ async def call_ollama(endpoint: str, model: str, messages: List[Message]) -> str
             logger.info(f"✅ Ollama API 응답 성공 - 응답 길이: {len(result)}자")
             return result
         except httpx.TimeoutException as e:
-            error_msg = f"연결 타임아웃 - {url} ({type(e).__name__})"
-            logger.error(f"❌ {error_msg}")
-            logger.error(f"   타임아웃 타입: {type(e)}")
-            raise HTTPException(status_code=500, detail=error_msg)
+            logger.error(f"❌ Ollama 연결 타임아웃 - {url} ({type(e).__name__})")
+            raise HTTPException(status_code=504, detail="Ollama 서버 응답 타임아웃")
         except httpx.ConnectError as e:
-            error_msg = f"연결 실패 - {url}"
-            logger.error(f"❌ {error_msg}: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"{error_msg}: 서버에 연결할 수 없습니다")
+            logger.error(f"❌ Ollama 연결 실패 - {url}: {str(e)}")
+            raise HTTPException(status_code=502, detail="Ollama 서버에 연결할 수 없습니다.")
         except httpx.HTTPStatusError as e:
-            error_msg = e.response.text if e.response else str(e)
-            logger.error(f"❌ Ollama API 에러 - {e.response.status_code}: {error_msg[:500]}")
-            raise HTTPException(status_code=500, detail=f"Ollama HTTP {e.response.status_code}")
+            logger.error(f"❌ Ollama API 에러 - {e.response.status_code}: {e.response.text[:500]}")
+            raise HTTPException(status_code=502, detail=f"Ollama HTTP {e.response.status_code}")
         except HTTPException:
             raise
         except Exception as e:
             logger.error(f"❌ Ollama 예외 발생: {type(e).__name__}: {str(e)}")
             import traceback
             logger.error(f"스택 트레이스:\n{traceback.format_exc()}")
-            raise HTTPException(status_code=500, detail=f"Ollama 오류: {str(e)}")
+            raise HTTPException(status_code=502, detail="Ollama 처리 중 오류가 발생했습니다.")
 
 
 def parse_agent_file(content: str, filename: str) -> AgentProfile:
@@ -605,7 +634,7 @@ async def chat(request: ChatRequest):
         logger.error(f"❌ 채팅 처리 중 예외 발생: {type(e).__name__}: {str(e)}")
         import traceback
         logger.error(f"스택 트레이스:\n{traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="채팅 처리 중 내부 오류가 발생했습니다.")
 
 
 @app.post("/api/connection-test")
@@ -804,6 +833,8 @@ async def stream_chat_response(cli_input: Dict[str, Any], request_id: str):
 
     try:
 
+        # put_nowait는 순서를 보장하고, unbounded 큐이므로 블로킹되지 않는다.
+        # create_task 방식은 fire-and-forget이라 청크 순서/유실 위험이 있어 사용하지 않는다.
         def handle_content_delta(text: str):
             chunk_count[0] += 1
             if chunk_count[0] % 10 == 1:  # 10개마다 로깅
@@ -812,9 +843,7 @@ async def stream_chat_response(cli_input: Dict[str, Any], request_id: str):
                 request_id, last_model[0], content=text, is_first=is_first[0]
             )
             is_first[0] = False
-            asyncio.create_task(
-                chunks_queue.put(f"data: {json.dumps(chunk)}\n\n")
-            )
+            chunks_queue.put_nowait(f"data: {json.dumps(chunk)}\n\n")
 
         def handle_result(result: Dict[str, Any]):
             result_data[0] = result
@@ -826,7 +855,7 @@ async def stream_chat_response(cli_input: Dict[str, Any], request_id: str):
             logger.info(f"   총 청크 수: {chunk_count[0]}")
             if result.get("message"):
                 last_model[0] = result["message"].get("model", last_model[0])
-            asyncio.create_task(chunks_queue.put("DONE"))
+            chunks_queue.put_nowait("DONE")
 
         def handle_error(error: Exception):
             logger.error(f"❌ [Claude CLI 오류] {error}")
@@ -837,23 +866,28 @@ async def stream_chat_response(cli_input: Dict[str, Any], request_id: str):
                     "code": None,
                 }
             }
-            asyncio.create_task(
-                chunks_queue.put(f"data: {json.dumps(error_chunk)}\n\n")
-            )
-            asyncio.create_task(chunks_queue.put("DONE"))
+            chunks_queue.put_nowait(f"data: {json.dumps(error_chunk)}\n\n")
+            chunks_queue.put_nowait("DONE")
 
-        # Claude CLI 실행 (백그라운드)
+        # Claude CLI 실행 (백그라운드). start()가 콜백 밖에서 예외로 죽더라도
+        # 소비 루프가 영원히 멈추지 않도록 항상 "DONE"을 큐에 넣는다.
+        async def run_subprocess():
+            try:
+                await subprocess.start(
+                    prompt=cli_input["prompt"],
+                    model=cli_input["model"],
+                    session_id=cli_input.get("session_id"),
+                    on_content_delta=handle_content_delta,
+                    on_result=handle_result,
+                    on_error=handle_error,
+                )
+            except Exception as exc:
+                logger.error(f"❌ [Claude CLI 백그라운드 실패] {exc}")
+            finally:
+                chunks_queue.put_nowait("DONE")
+
         logger.info(f"⚙️ [Claude CLI 실행] 모델: {cli_input['model']}")
-        asyncio.create_task(
-            subprocess.start(
-                prompt=cli_input["prompt"],
-                model=cli_input["model"],
-                session_id=cli_input.get("session_id"),
-                on_content_delta=handle_content_delta,
-                on_result=handle_result,
-                on_error=handle_error,
-            )
-        )
+        asyncio.create_task(run_subprocess())
 
         # 큐에서 청크 읽어서 yield
         logger.debug(f"📬 [큐 대기] 스트림 청크 수신 대기 중...")
@@ -969,220 +1003,46 @@ async def generate_code_with_claude_cli(
 
     features_text = ", ".join(features) if features else "기본 기능"
 
-    # Claude CLI에 최적화된 프롬프트 작성
+    # Simplified prompts for Claude CLI
     prompts = {
-        "html": f"""당신은 전문 프론트엔드 개발자입니다. 다음 요구사항에 맞는 고품질 웹 애플리케이션을 생성해주세요.
+        "html": f"""Create a complete, production-ready HTML web application for this requirement:
 
-## 요구사항
 {requirements}
 
-## 프로젝트 정보
-- 타입: {project_type}
-- 주요 기능: {features_text}
+Project type: {project_type}
+Features: {features_text}
 
-## 개발 가이드라인
+Requirements:
+- Single HTML file with inline CSS and JavaScript
+- Modern, responsive design with gradient backgrounds
+- Full functionality implementation (not just UI mockup)
+- Use localStorage for data persistence
+- Include form validation and error handling
+- Smooth animations and transitions
+- No code comments
+- Output ONLY the HTML code without markdown code blocks
 
-### 1. HTML 구조
-- 완전한 HTML5 문서 (<!DOCTYPE html>)
-- 의미론적 HTML (semantic tags)
-- 접근성 고려 (ARIA 속성)
+Generate the complete HTML code now:""",
 
-### 2. CSS 스타일링 (인라인 <style> 태그)
-**디자인 시스템:**
-- 컬러 팔레트: Primary (#4f46e5), Secondary (#06b6d4), Success (#10b981), Danger (#ef4444)
-- 타이포그래피:
-  - 헤딩: 'Segoe UI', system-ui, sans-serif (font-weight: 700)
-  - 본문: 'Segoe UI', system-ui, sans-serif (font-weight: 400)
-- 간격: 8px 기반 스케일 (8, 16, 24, 32, 48, 64)
-- Border Radius: 8px (버튼, 카드), 12px (모달), 4px (입력 필드)
+        "python": f"""Create a complete, production-ready FastAPI backend for this requirement:
 
-**레이아웃:**
-- Flexbox 또는 Grid 사용
-- 반응형 디자인 (모바일 우선)
-- @media 쿼리 (768px, 1024px 브레이크포인트)
-
-**인터랙티브 요소:**
-- 호버 효과 (transform, box-shadow)
-- 트랜지션 (0.2s ease)
-- 버튼 상태 (hover, active, disabled)
-
-### 3. JavaScript 기능 (인라인 <script> 태그)
-**필수 구현:**
-- DOMContentLoaded 이벤트 리스너
-- 이벤트 위임 패턴 사용
-- 로컬 스토리지 활용 (localStorage.getItem, setItem)
-- 데이터 검증 및 에러 핸들링
-- 사용자 피드백 (성공/에러 메시지)
-
-**코드 품질:**
-- 함수형 프로그래밍 스타일
-- 재사용 가능한 함수
-- 명확한 변수명
-- 에러 경계 처리
-
-### 4. 사용자 경험
-- 로딩 상태 표시
-- 빈 상태 메시지
-- 에러 메시지
-- 성공 알림
-- 부드러운 애니메이션
-
-### 5. 예제 코드 구조
-
-```html
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>앱 타이틀</title>
-    <style>
-        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-        body {{
-            font-family: 'Segoe UI', system-ui, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 24px;
-        }}
-        .container {{
-            max-width: 800px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 16px;
-            padding: 32px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-        }}
-        /* ... 더 많은 스타일 */
-    </style>
-</head>
-<body>
-    <div class="container">
-        <!-- 실제 기능 구현 -->
-    </div>
-    <script>
-        document.addEventListener('DOMContentLoaded', () => {{
-            // 실제 동작하는 코드
-        }});
-    </script>
-</body>
-</html>
-```
-
-## 중요
-- 주석 없이 완전한 코드만 작성
-- 실제 동작하는 기능 구현
-- 프로덕션 수준의 코드 품질
-- 코드 블록 마커(```) 없이 순수 HTML만 출력
-
-완전한 HTML 코드를 작성해주세요:""",
-
-        "python": f"""당신은 전문 백엔드 개발자입니다. 다음 요구사항에 맞는 고품질 FastAPI 애플리케이션을 생성해주세요.
-
-## 요구사항
 {requirements}
 
-## 프로젝트 정보
-- 타입: {project_type}
-- 주요 기능: {features_text}
+Project type: {project_type}
+Features: {features_text}
 
-## 개발 가이드라인
+Requirements:
+- FastAPI framework with CORS middleware
+- Pydantic models for validation
+- RESTful API endpoints (GET, POST, PUT, DELETE)
+- In-memory data storage with UUID keys
+- Proper error handling with HTTPException
+- Health check endpoint at /
+- Run with uvicorn on port 8000
+- No code comments
+- Output ONLY the Python code without markdown code blocks
 
-### 1. 기본 구조
-```python
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Dict, Optional
-import uvicorn
-
-app = FastAPI(title="API Title", version="1.0.0")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-```
-
-### 2. 데이터 모델 (Pydantic)
-- BaseModel 상속
-- 타입 힌팅 명확히
-- 검증 규칙 포함
-- 예제 값 제공
-
-```python
-class Item(BaseModel):
-    id: str
-    title: str
-    description: Optional[str] = None
-    completed: bool = False
-
-class ItemCreate(BaseModel):
-    title: str
-    description: Optional[str] = None
-```
-
-### 3. 데이터 저장소
-- 인메모리 딕셔너리 또는 리스트
-- UUID로 고유 ID 생성
-- 데이터 초기화
-
-```python
-import uuid
-from datetime import datetime
-
-items_db: Dict[str, Dict] = {{}}
-
-def generate_id():
-    return str(uuid.uuid4())
-```
-
-### 4. API 엔드포인트
-**CRUD 패턴:**
-- GET /items - 목록 조회
-- GET /items/{{id}} - 상세 조회
-- POST /items - 생성
-- PUT /items/{{id}} - 수정
-- DELETE /items/{{id}} - 삭제
-
-**에러 처리:**
-```python
-@app.get("/items/{{item_id}}")
-async def get_item(item_id: str):
-    if item_id not in items_db:
-        raise HTTPException(status_code=404, detail="Item not found")
-    return items_db[item_id]
-```
-
-### 5. 헬스체크
-```python
-@app.get("/")
-async def health_check():
-    return {{"status": "ok", "timestamp": datetime.now().isoformat()}}
-```
-
-### 6. 서버 실행
-```python
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-```
-
-### 7. 코드 품질
-- 타입 힌팅 사용
-- 에러 핸들링
-- 적절한 HTTP 상태 코드
-- RESTful 설계 원칙
-- 비동기 함수 (async/await)
-
-## 중요
-- 주석 없이 완전한 코드만 작성
-- 실제 동작하는 API 구현
-- 프로덕션 수준의 코드 품질
-- 코드 블록 마커(```) 없이 순수 Python만 출력
-
-완전한 Python 코드를 작성해주세요:"""
+Generate the complete Python code now:"""
     }
 
     prompt = prompts.get(file_type, f"Generate {file_type} code")
@@ -1438,24 +1298,23 @@ async def submit_feedback(project_id: str, request: FeedbackRequest):
             # Claude CLI로 코드 수정
             logger.info(f"🤖 Claude CLI를 사용하여 코드 수정 중...")
 
-            prompt = f"""당신은 전문 개발자입니다. 다음 코드를 수정해주세요.
+            prompt = f"""Modify the following {file_type} code based on the user's feedback.
 
-## 원본 코드
+Original code:
 ```{file_type}
 {original_code}
 ```
 
-## 수정 요청사항
+User feedback:
 {request.feedback}
 
-## 지침
-1. 위의 수정 요청사항을 정확히 반영
-2. 기존의 모든 기능은 유지
-3. 코드 품질 향상 (필요시)
-4. 주석 없이 완전한 코드만 작성
-5. 코드 블록 마커(```) 없이 순수 코드만 출력
+Requirements:
+- Apply the requested changes accurately
+- Preserve all existing functionality
+- No code comments
+- Output ONLY the modified code without markdown code blocks
 
-수정된 완전한 코드를 작성해주세요:"""
+Generate the complete modified code now:"""
 
             subprocess_client = ClaudeSubprocess()
             result_data = None

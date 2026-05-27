@@ -1,0 +1,9 @@
+{
+  "webhook_url": "",
+  "enabled": true,
+  "events": {
+    "subagent_stop": true,
+    "file_edit": true,
+    "git_commit": true
+  }
+}

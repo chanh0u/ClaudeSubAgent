@@ -1,0 +1,31 @@
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "permissions": {
+    "defaultMode": "acceptEdits"
+  },
+  "hooks": {
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/slack_notify.py subagent_stop"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/slack_notify.py post_tool"
+          }
+        ]
+      }
+    ]
+  }
+}
