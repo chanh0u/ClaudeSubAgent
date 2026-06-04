@@ -601,6 +601,39 @@ def get_agents() -> List[AgentProfile]:
     return agents
 
 
+def _extract_code(text: str, file_type: str) -> str:
+    """응답 텍스트에서 코드 블록을 추출한다. 코드 블록이 없으면 원문 반환."""
+    if "```" not in text:
+        return text
+    lang_hints = {"html": ["html", "htm"], "python": ["python", "py"]}
+    hints = lang_hints.get(file_type, [])
+    parts = text.split("```")
+    # 짝수 인덱스(0,2,4...) = 바깥 텍스트, 홀수(1,3,5...) = 코드 블록 내용
+    for i in range(1, len(parts), 2):
+        block = parts[i]
+        first_line, _, rest = block.partition("\n")
+        if first_line.strip().lower() in hints or first_line.strip() == "":
+            return rest.strip() if rest.strip() else block.strip()
+    # 언어 힌트 없으면 첫 번째 블록 반환
+    if len(parts) >= 3:
+        block = parts[1]
+        _, _, rest = block.partition("\n")
+        return rest.strip() if rest.strip() else block.strip()
+    return text
+
+
+def _looks_like_code(text: str, file_type: str) -> bool:
+    """텍스트가 실제 코드인지 간단히 판별한다."""
+    if not text:
+        return False
+    t = text.lstrip()
+    if file_type == "html":
+        return t.startswith("<") and ("<html" in t.lower() or "<!doctype" in t.lower() or "<div" in t.lower())
+    if file_type == "python":
+        return any(kw in t for kw in ("def ", "class ", "import ", "from ", "fastapi", "FastAPI"))
+    return True
+
+
 def get_workspace_path() -> pathlib.Path:
     """Workspace 디렉토리 경로 반환"""
     base_path = pathlib.Path(__file__).parent.parent.parent
@@ -1013,7 +1046,7 @@ async def non_streaming_chat_response(
     subprocess = ClaudeSubprocess()
     result_data = None
 
-    async def handle_result(result: Dict[str, Any]):
+    def handle_result(result: Dict[str, Any]):
         nonlocal result_data
         result_data = result
         usage = result.get("usage", {})
@@ -1082,7 +1115,7 @@ async def generate_code_with_claude_cli(
     project_type: str,
     features: List[str],
     file_type: str,  # "html" or "python"
-    model: str = "claude-sonnet-4"
+    model: str = "sonnet"
 ) -> str:
     """Claude CLI를 사용하여 고품질 코드 생성"""
 
@@ -1155,7 +1188,7 @@ Generate the complete Python code now:"""
         subprocess_client = ClaudeSubprocess()
         result_data = None
 
-        async def handle_result(result: Dict[str, Any]):
+        def handle_result(result: Dict[str, Any]):
             nonlocal result_data
             result_data = result
 
@@ -1166,31 +1199,32 @@ Generate the complete Python code now:"""
             on_result=handle_result,
         )
 
-        if result_data and result_data.get("message"):
-            content_blocks = result_data["message"].get("content", [])
-            code = ""
-            for block in content_blocks:
-                if block.get("type") == "text":
-                    code += block.get("text", "")
+        if result_data:
+            # 새 포맷: result["result"] 플레인 텍스트
+            # 구 포맷: result["message"]["content"] 블록
+            raw = result_data.get("result", "")
+            if not raw:
+                content_blocks = result_data.get("message", {}).get("content", [])
+                for block in content_blocks:
+                    if block.get("type") == "text":
+                        raw += block.get("text", "")
 
-            # 코드 블록 마커 제거
-            code = code.strip()
-            if "```" in code:
-                parts = code.split("```")
-                for part in parts:
-                    cleaned = part.strip()
-                    # 언어 지시자 제거
-                    if cleaned and not cleaned.split('\n')[0].strip() in ["html", "python", "javascript", "css"]:
-                        code = cleaned
-                        break
-                    elif cleaned and '\n' in cleaned:
-                        # 첫 줄이 언어 지시자인 경우
-                        lines = cleaned.split('\n')
-                        if lines[0].strip() in ["html", "python", "javascript", "css"]:
-                            code = '\n'.join(lines[1:])
-                        else:
-                            code = cleaned
-                        break
+            code = _extract_code(raw.strip(), file_type)
+
+            # Claude CLI가 파일을 직접 생성하고 설명만 반환한 경우 API로 폴백
+            if not _looks_like_code(code, file_type):
+                logger.warning("⚠️ Claude CLI가 코드 대신 설명 텍스트를 반환함 → Claude API로 폴백")
+                anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+                if anthropic_api_key:
+                    code = await call_claude(
+                        anthropic_api_key,
+                        "claude-sonnet-4-6",
+                        [Message(role="user", text=prompt)],
+                    )
+                    code = _extract_code(code.strip(), file_type)
+                else:
+                    logger.error("❌ ANTHROPIC_API_KEY 미설정 - 폴백 불가")
+                    return f"<!-- Error: Claude CLI returned description instead of code -->"
 
             logger.info(f"✅ Claude CLI 코드 생성 완료 - {len(code)} 자")
             return code
@@ -1232,8 +1266,7 @@ async def create_project(request: ProjectCreateRequest):
     )
 
     # Claude CLI를 사용하여 고품질 코드 생성
-    # 모델 선택: sonnet-4 (빠르고 고품질) 또는 opus-4 (최고 품질)
-    model = "claude-sonnet-4"
+    model = "sonnet"
 
     # 프로젝트 타입에 따라 실제 코드 생성
     if request.project_type in ["web", "fullstack"]:
@@ -1410,23 +1443,24 @@ Generate the complete modified code now:"""
             subprocess_client = ClaudeSubprocess()
             result_data = None
 
-            async def handle_result(result: Dict[str, Any]):
+            def handle_result(result: Dict[str, Any]):
                 nonlocal result_data
                 result_data = result
 
             # Claude CLI 실행
             await subprocess_client.start(
                 prompt=prompt,
-                model="claude-sonnet-4",
+                model="sonnet",
                 on_result=handle_result,
             )
 
-            if result_data and result_data.get("message"):
-                content_blocks = result_data["message"].get("content", [])
-                modified_code = ""
-                for block in content_blocks:
-                    if block.get("type") == "text":
-                        modified_code += block.get("text", "")
+            if result_data:
+                modified_code = result_data.get("result", "")
+                if not modified_code:
+                    content_blocks = result_data.get("message", {}).get("content", [])
+                    for block in content_blocks:
+                        if block.get("type") == "text":
+                            modified_code += block.get("text", "")
 
                 # 코드 블록 제거
                 modified_code = modified_code.strip()

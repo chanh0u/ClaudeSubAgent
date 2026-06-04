@@ -66,7 +66,11 @@ def cli_result_to_openai(result: Dict[str, Any], request_id: str) -> Dict[str, A
             }
     """
     message = result.get("message", {})
-    content = extract_text_from_content(message.get("content", []))
+    # 새 포맷: result["result"] 플레인 텍스트 / 구 포맷: result["message"]["content"] 블록
+    if result.get("result"):
+        content = result["result"]
+    else:
+        content = extract_text_from_content(message.get("content", []))
     usage = result.get("usage", {})
 
     return {

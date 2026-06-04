@@ -119,15 +119,13 @@ class ClaudeSubprocess:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=cwd or os.getcwd(),
-                text=True,
-                bufsize=1,
             )
             logger.info(f"✅ [subprocess] 프로세스 시작됨 (PID: {self.process.pid})")
 
-            # 프롬프트를 stdin으로 전달
+            # 프롬프트를 stdin으로 전달 (bytes로 인코딩)
             if self.process.stdin:
                 logger.info(f"📝 [stdin] 프롬프트 전송 중... ({len(prompt)}자)")
-                self.process.stdin.write(prompt)
+                self.process.stdin.write(prompt.encode("utf-8"))
                 self.process.stdin.close()
                 logger.info(f"✅ [stdin] 프롬프트 전송 완료 및 stdin 닫힘")
 
@@ -196,15 +194,19 @@ class ClaudeSubprocess:
         message_types = {}
 
         try:
-            # asyncio로 타임아웃 처리
+            # asyncio로 타임아웃 처리 (바이트 모드로 읽고 UTF-8 디코딩)
             async def read_lines():
                 loop = asyncio.get_event_loop()
                 while True:
-                    line = await loop.run_in_executor(
+                    raw = await loop.run_in_executor(
                         None, self.process.stdout.readline
                     )
-                    if not line:
+                    if not raw:
                         break
+                    if isinstance(raw, bytes):
+                        line = raw.decode("utf-8", errors="replace")
+                    else:
+                        line = raw
                     yield line.strip()
 
             async def process_stream_lines():
@@ -228,7 +230,7 @@ class ClaudeSubprocess:
 
                         # 모든 메시지 콜백
                         if on_message:
-                            on_message(message)
+                            await _call_callback(on_message, message)
 
                         # 콘텐츠 델타 처리 (스트리밍)
                         if message.get("type") == "content_block_delta":
@@ -239,12 +241,12 @@ class ClaudeSubprocess:
                                     delta_count += 1
                                     if delta_count == 1 or delta_count % 20 == 0:
                                         logger.debug(f"📨 [delta #{delta_count}] 텍스트: {len(text)}자")
-                                    on_content_delta(text)
+                                    await _call_callback(on_content_delta, text)
 
                         # 최종 결과 처리
                         elif message.get("type") == "result" and on_result:
                             logger.info(f"🎯 [result] 최종 결과 메시지 수신")
-                            on_result(message)
+                            await _call_callback(on_result, message)
 
                         # 기타 중요 메시지 타입 로깅
                         elif msg_type in ["message_start", "content_block_start", "content_block_stop", "message_stop"]:
@@ -281,9 +283,11 @@ class ClaudeSubprocess:
         finally:
             # stderr 로그
             if self.process.stderr:
-                stderr_output = self.process.stderr.read()
-                if stderr_output:
-                    logger.warning(f"⚠️ [stderr] {stderr_output[:500]}")
+                raw_err = self.process.stderr.read()
+                if raw_err:
+                    if isinstance(raw_err, bytes):
+                        raw_err = raw_err.decode("utf-8", errors="replace")
+                    logger.warning(f"⚠️ [stderr] {raw_err[:500]}")
                 else:
                     logger.debug(f"✅ [stderr] 출력 없음")
 
